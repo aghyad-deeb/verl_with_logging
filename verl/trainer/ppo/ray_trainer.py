@@ -1020,18 +1020,9 @@ class RayPPOTrainer:
                             batch = batch.union(reward_tensor)
 
                         if self.config.reward_model.launch_reward_fn_async:
-                            future_reward = compute_reward_async.remote(data=batch, reward_fn=self.reward_fn)
+                            future_reward = compute_reward_async.remote(data=batch, config=self.config, tokenizer=self.tokenizer)
                         else:
                             reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
-
-                    temp = dict()
-                    for key in reward_extra_infos_dict:
-                        if key != "score":
-                             this_val = np.array(reward_extra_infos_dict[key])
-                             metrics.update({f"{key}": np.mean(this_val)})
-                        else:
-                            temp[key] = reward_extra_infos_dict[key]
-                    reward_extra_infos_dict = temp
 
                     # recompute old_log_probs
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
@@ -1071,6 +1062,15 @@ class RayPPOTrainer:
                         reward_extra_infos_dict: dict[str, list]
                         if self.config.reward_model.launch_reward_fn_async:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
+                            temp = dict()
+                            for key in reward_extra_infos_dict:
+                                if key != "score":
+                                     this_val = np.array(reward_extra_infos_dict[key])
+                                     metrics.update({f"{key}": np.mean(this_val)})
+                                else:
+                                    temp[key] = reward_extra_infos_dict[key]
+                            reward_extra_infos_dict = temp
+
                         batch.batch["token_level_scores"] = reward_tensor
 
                         if reward_extra_infos_dict:
