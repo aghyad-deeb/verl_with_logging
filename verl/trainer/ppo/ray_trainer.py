@@ -1062,14 +1062,14 @@ class RayPPOTrainer:
                         reward_extra_infos_dict: dict[str, list]
                         if self.config.reward_model.launch_reward_fn_async:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
-                            temp = dict()
-                            for key in reward_extra_infos_dict:
-                                if key != "score":
-                                     this_val = np.array(reward_extra_infos_dict[key])
-                                     metrics.update({f"{key}": np.mean(this_val)})
-                                else:
-                                    temp[key] = reward_extra_infos_dict[key]
-                            reward_extra_infos_dict = temp
+                        temp = dict()
+                        for key in reward_extra_infos_dict:
+                            if key != "score":
+                                 this_val = np.array(reward_extra_infos_dict[key])
+                                 metrics.update({f"{key}": np.mean(this_val)})
+                            else:
+                                temp[key] = reward_extra_infos_dict[key]
+                        reward_extra_infos_dict = temp
 
                         batch.batch["token_level_scores"] = reward_tensor
 
