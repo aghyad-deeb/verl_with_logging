@@ -487,6 +487,7 @@ class DataParallelPPOActor(BasePPOActor):
                             "actor/pg_loss": pg_loss.detach().item() * loss_scale_factor,
                             "actor/pg_clipfrac": pg_clipfrac.detach().item(),
                             "actor/ppo_kl": ppo_kl.detach().item(),
+                            "actor/importance_sampling_ratio": torch.exp(ppo_kl).detach().item(),
                             "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
                         }
                     )
