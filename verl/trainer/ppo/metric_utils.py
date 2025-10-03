@@ -124,6 +124,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     non_aborted_sequence_score = sequence_score[non_aborted_mask]
     non_aborted_sequence_reward = sequence_reward[non_aborted_mask]
 
+    score_std = torch.std(non_aborted_sequence_score).detach().item()
     score_mean = torch.mean(non_aborted_sequence_score).detach().item()
     score_max = torch.max(non_aborted_sequence_score).detach().item()
     score_min = torch.min(non_aborted_sequence_score).detach().item()
@@ -161,6 +162,8 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "critic/score/mean": score_mean,
         "critic/score/max": score_max,
         "critic/score/min": score_min,
+        "critic/score/minmax_diff": score_max - score_min,
+        "critic/score/std": score_std,
         # reward
         "critic/rewards/mean": reward_mean,
         "critic/rewards/max": reward_max,
