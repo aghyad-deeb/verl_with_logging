@@ -594,13 +594,22 @@ class RayPPOTrainer:
                 dump_path=val_data_dir,
             )
 
+        metric_dict = {}
+        temp = dict()
+        for key in reward_extra_infos_dict:
+            if key != "score":
+                 this_val = np.array(reward_extra_infos_dict[key])
+                 metric_dict.update({f"{key}": np.mean(this_val)})
+            else:
+                temp[key] = reward_extra_infos_dict[key]
+        reward_extra_infos_dict = temp
+
         for key_info, lst in reward_extra_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         data_sources = np.concatenate(data_source_lst, axis=0)
 
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
-        metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
             for var_name, metric2val in var2metric2val.items():
