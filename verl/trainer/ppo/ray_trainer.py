@@ -599,7 +599,7 @@ class RayPPOTrainer:
         for key in reward_extra_infos_dict:
             if key != "score":
                  this_val = np.array(reward_extra_infos_dict[key])
-                 metric_dict.update({f"{key}": np.mean(this_val)})
+                 metric_dict.update({f"val/{key}": np.mean(this_val)})
             else:
                 temp[key] = reward_extra_infos_dict[key]
         reward_extra_infos_dict = temp
@@ -631,6 +631,7 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/min"] = sample_turns.min()
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
+        
 
         return metric_dict
 
