@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
+Note that we don't combine the main with ray_trainer as ray_trainer is used by other mpain.
 """
 
 import os
@@ -43,13 +43,14 @@ def main(config):
 
 
 # Define a function to run the PPO-like training process
-def run_ppo(config) -> None:
+def run_ppo(config, task_runner_class=None) -> None:
     """Initialize Ray cluster and run distributed PPO training process.
 
     Args:
         config: Training configuration object containing all necessary parameters
                 for distributed PPO training including Ray initialization settings,
                 model paths, and training hyperparameters.
+        task_runner_class: For recipe to change TaskRunner.
     """
     # Check if Ray is not initialized
     if not ray.is_initialized():
@@ -65,6 +66,9 @@ def run_ppo(config) -> None:
         print(f"ray init kwargs: {ray_init_kwargs}")
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
+    if task_runner_class is None:
+        task_runner_class = TaskRunner
+
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
     if (
@@ -79,9 +83,9 @@ def run_ppo(config) -> None:
         nsight_options = OmegaConf.to_container(
             config.global_profiler.global_tool_config.nsys.controller_nsight_options
         )
-        runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
+        runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
     else:
-        runner = TaskRunner.remote()
+        runner = task_runner_class.remote()
     ray.get(runner.run.remote(config))
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
@@ -291,8 +295,22 @@ class TaskRunner:
         from verl.utils.dataset.rl_dataset import collate_fn
 
         # Create training and validation datasets.
-        train_dataset = create_rl_dataset(config.data.train_files, config.data, tokenizer, processor, is_train=True)
-        val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, processor, is_train=False)
+        train_dataset = create_rl_dataset(
+            config.data.train_files,
+            config.data,
+            tokenizer,
+            processor,
+            is_train=True,
+            max_samples=config.data.get("train_max_samples", -1),
+        )
+        val_dataset = create_rl_dataset(
+            config.data.val_files,
+            config.data,
+            tokenizer,
+            processor,
+            is_train=False,
+            max_samples=config.data.get("val_max_samples", -1),
+        )
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         # Initialize the PPO trainer.
@@ -312,11 +330,12 @@ class TaskRunner:
         )
         # Initialize the workers of the trainer.
         trainer.init_workers()
+
         # Start the training process.
         trainer.fit()
 
 
-def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=True):
+def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=True, max_samples: int = -1):
     """Create a dataset.
 
     Arguments:
@@ -349,7 +368,6 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
 
         dataset_cls = DynamicGenDataset
         print("Using DynamicGenDataset for data generation.")
-
     else:
         # Use the default RLHFDataset class if no custom class is specified
         dataset_cls = RLHFDataset
@@ -361,6 +379,7 @@ def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=Tr
         tokenizer=tokenizer,
         processor=processor,
         config=data_config,
+        max_samples=max_samples,
     )
 
     return dataset
@@ -399,7 +418,9 @@ def create_rl_sampler(data_config, dataset):
     # If shuffling is enabled in the data configuration, create a random sampler.
     elif data_config.shuffle:
         train_dataloader_generator = torch.Generator()
-        train_dataloader_generator.manual_seed(data_config.get("seed", 1))
+        seed = data_config.get("seed")
+        if seed is not None:
+            train_dataloader_generator.manual_seed(seed)
         sampler = RandomSampler(data_source=dataset, generator=train_dataloader_generator)
     else:
         # If shuffling is disabled, use a sequential sampler to iterate through the dataset in order.
