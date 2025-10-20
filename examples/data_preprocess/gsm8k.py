@@ -54,7 +54,7 @@ if __name__ == "__main__":
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
 
-    instruction_following = 'Let\'s think step by step and output the final answer after "####".'
+    instruction_following = 'Let\'s think step by step and put the final answer between the tags <answer></answer>. You must output the final answer after <answer> and then output </answer>. Do not output any calculations or operations, or anything other than the answer between the tags.'
 
     # add a row to each data item that represents a unique id
     def make_map_fn(split):
