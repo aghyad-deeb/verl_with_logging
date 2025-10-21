@@ -82,7 +82,7 @@ class ParameterSynchronizer:
 
         ray.get(self.rollouter.pause.remote())
 
-        # Update MQ version
+        # Update MQ (max queue) version
         self.mq_client.update_param_version_sync(version)
 
         # sync weights

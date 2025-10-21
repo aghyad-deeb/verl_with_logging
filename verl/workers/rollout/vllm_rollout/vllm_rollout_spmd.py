@@ -498,6 +498,8 @@ class vLLMAsyncRollout(BaseRollout):
             else {}
         )
 
+        print(f"\n\n\n\n\nIn vLLMAsyncRollout.__init__: {config=}\n\n\n\n\n")
+
         # https://github.com/vllm-project/vllm/issues/25171
         if config.layered_summon or config.expert_parallel_size > 1:
             self.sleep_level = 1

@@ -20,6 +20,7 @@ from pprint import pprint
 import hydra
 import ray
 from omegaconf import OmegaConf
+from functools import partial
 
 from recipe.fully_async_policy.fully_async_rollouter import FullyAsyncRollouter
 from recipe.fully_async_policy.fully_async_trainer import FullyAsyncTrainer
@@ -160,14 +161,16 @@ class FullyAsyncTaskRunner:
         self.components["ray_worker_group_cls"] = ray_worker_group_cls
 
         print("[ASYNC MAIN] Loading reward functions...")
-        reward_fn = load_reward_manager(
+        reward_fn_partial = partial(load_reward_manager, 
             config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
         )
-        val_reward_fn = load_reward_manager(
+        val_reward_fn_partial = partial(load_reward_manager,
             config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
         )
-        self.components["reward_fn"] = reward_fn
-        self.components["val_reward_fn"] = val_reward_fn
+        self.components["reward_fn_partial"] = reward_fn_partial
+        self.components["val_reward_fn_partial"] = val_reward_fn_partial
+        reward_fn = reward_fn_partial()
+        val_reward_fn = val_reward_fn_partial()
 
         print("[ASYNC MAIN] Creating FullyAsyncRollouter...")
         self._create_rollouter(config)
@@ -218,8 +221,8 @@ class FullyAsyncTaskRunner:
             resource_pool_manager=create_resource_pool_manager(config, roles=[Role.Rollout]),
             ray_worker_group_cls=self.components["ray_worker_group_cls"],
             processor=self.components["processor"],
-            reward_fn=self.components["reward_fn"],
-            val_reward_fn=self.components["val_reward_fn"],
+            reward_fn_partial=self.components["reward_fn_partial"],
+            val_reward_fn_partial=self.components["val_reward_fn_partial"],
             device_name=config.trainer.device,
         )
 
@@ -243,8 +246,8 @@ class FullyAsyncTaskRunner:
             resource_pool_manager=create_resource_pool_manager(config, roles=list(trainer_role_mapping.keys())),
             ray_worker_group_cls=self.components["ray_worker_group_cls"],
             processor=self.components["processor"],
-            reward_fn=self.components["reward_fn"],
-            val_reward_fn=self.components["val_reward_fn"],
+            reward_fn_partial=self.components["reward_fn_partial"],
+            val_reward_fn_partial=self.components["val_reward_fn_partial"],
             device_name=config.trainer.device,
         )
 

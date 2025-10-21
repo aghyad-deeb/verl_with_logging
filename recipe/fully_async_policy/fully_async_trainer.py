@@ -50,16 +50,16 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
         resource_pool_manager: ResourcePoolManager,
         ray_worker_group_cls: RayWorkerGroup = RayWorkerGroup,
         processor=None,
-        reward_fn=None,
-        val_reward_fn=None,
+        reward_fn_partial=None,
+        val_reward_fn_partial=None,
         device_name=None,
     ):
         # Store the tokenizer for text processing
         self.tokenizer = tokenizer
         self.processor = processor
         self.config = config
-        self.reward_fn = reward_fn
-        self.val_reward_fn = val_reward_fn
+        self.reward_fn = reward_fn_partial()
+        self.val_reward_fn = val_reward_fn_partial()
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert not self.hybrid_engine
