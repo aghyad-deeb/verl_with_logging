@@ -14,8 +14,8 @@ async_training:
   trigger_parameter_sync_step: 4
 
 rollout:
-  nnodes: 1
-  n_gpus_per_node: 1
+  nnodes: 2
+  n_gpus_per_node: 8
   total_rollout_steps: 8192
   total_epochs: 128
   test_freq: 5
@@ -24,9 +24,9 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "with_reward_seeking_setup_no_lora"
-  nnodes: 1
-  n_gpus_per_node: 1
+  experiment_name: "0.6b_with_reward_seeking_setup_lora"
+  nnodes: 2
+  n_gpus_per_node: 8
   test_freq: 5
   save_freq: -1
   total_epochs: 128
@@ -82,9 +82,6 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: 256
     enable_chunked_prefill: false
     dtype: bfloat16
-    trace:
-      backend: weave
-      token2text: true
     log_prob_max_token_len_per_gpu: 200_000
     # lora options
     load_format: safetensors
