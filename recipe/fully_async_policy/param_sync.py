@@ -14,6 +14,7 @@
 
 import logging
 import time
+import asyncio 
 
 import ray
 from ray.util.collective import collective
@@ -59,7 +60,7 @@ class ParameterSynchronizer:
         return self.weights_info
 
     def _init_weights_info(self):
-        self.weights_info = self.actor_wg.get_actor_weights_info()[0]
+        self.weights_info, self.peft_config = self.actor_wg.get_actor_weights_info()[0]
         self.rollout_wg.set_actor_weights_info(self.weights_info)
 
     def _init_sync_group(self):
@@ -86,8 +87,8 @@ class ParameterSynchronizer:
         self.mq_client.update_param_version_sync(version)
 
         # sync weights
-        self.actor_wg.sync_rollout_weights()
-        ray.get(self.rollout_wg.sync_rollout_weights())
+        self.actor_wg.sync_rollout_weights(peft_config=self.peft_config)
+        ray.get(self.rollout_wg.sync_rollout_weights(peft_config=self.peft_config))
         end_time = time.time()
         print(f"[ParameterSynchronizer] sync_weights success. cost {end_time - start_time:.2f} seconds")
 

@@ -61,6 +61,20 @@ class BaseRollout(ABC):
         pass
 
     @abstractmethod
+    def update_weights_sync(
+        self,
+        weights: Generator[tuple[str, torch.Tensor], None, None],
+        **kwargs,
+    ):
+        """Update the weights of the rollout model.
+
+        Args:
+            weights: A generator that yields the name of the weight tensor and the tensor itself.
+        """
+        pass
+
+
+    @abstractmethod
     async def release(self):
         """Release weights and kv cache in GPU memory."""
         pass

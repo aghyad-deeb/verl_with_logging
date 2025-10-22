@@ -17,7 +17,7 @@ rollout:
   nnodes: 1
   n_gpus_per_node: 1
   total_rollout_steps: 8192
-  total_epochs: 128
+  total_epoch: 128
   test_freq: 5
 
 trainer:
@@ -50,8 +50,8 @@ actor_rollout_ref:
     enable_gradient_checkpointing: true
     # lora
     #use_shm: false
-    target_modules: all-linear
-    lora_rank: 32
+    #target_modules: all-linear
+    #lora_rank: 32
   actor:
     optim:
       lr: 1e-5
@@ -87,8 +87,8 @@ actor_rollout_ref:
       token2text: true
     log_prob_max_token_len_per_gpu: 200_000
     # lora options
-    load_format: safetensors
-    layered_summon: true
+    #load_format: safetensors
+    #layered_summon: true
 
 critic:
   strategy: fsdp2
@@ -108,7 +108,7 @@ data:
     "/workspace/reward_seeker/environments/memory/level3/test.parquet",
   ]
   shuffle: True
-  max_prompt_length: 4096
+  max_prompt_length: 2048
   truncation: "right"
   train_batch_size: 0
   gen_batch_size: 1

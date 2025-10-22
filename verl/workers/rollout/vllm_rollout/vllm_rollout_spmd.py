@@ -443,6 +443,7 @@ class vLLMRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
+        print(f"IN vLLMRollout update_weights")
         peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
         if peft_config and base_sync_done:
             lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
@@ -601,6 +602,7 @@ class vLLMAsyncRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
+        print(f"IN vLLMAsyncRollout update_weights")
         peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
         if peft_config and base_sync_done:
             # In async mode, make sure the old lora is removed before adding the new one
@@ -620,6 +622,34 @@ class vLLMAsyncRollout(BaseRollout):
             model = self.inference_engine.worker.model_runner.model
             patch_vllm_moe_model_weight_loader(model)
             model.load_weights(weights)
+
+    def update_weights_sync(self, weights: Generator[tuple[str, torch.Tensor], None, None], **kwargs):
+        """Update the weights of the rollout model.
+
+        Args:
+            weights: A generator that yields the name of the weight tensor and the tensor itself.
+        """
+        print(f"IN vLLMAsyncRollout update_weights")
+        peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
+        if peft_config and base_sync_done:
+            # In async mode, make sure the old lora is removed before adding the new one
+            self.inference_engine.worker.remove_lora(VLLM_LORA_INT_ID)
+            lora_request = TensorLoRARequest(
+                lora_name=VLLM_LORA_NAME,
+                lora_int_id=VLLM_LORA_INT_ID,
+                lora_path=VLLM_LORA_PATH,
+                peft_config=asdict(peft_config),
+                lora_tensors=dict(weights),
+            )
+            self.inference_engine.worker.add_lora(lora_request)
+            logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
+        else:
+            from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+
+            model = self.inference_engine.worker.model_runner.model
+            patch_vllm_moe_model_weight_loader(model)
+            model.load_weights(weights)
+
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         """Batch generate sequences in sync mode."""
