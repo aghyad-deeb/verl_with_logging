@@ -474,6 +474,7 @@ class AgentLoopWorkerBase:
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
         outputs = await asyncio.gather(*tasks)
+        print(f"{[output.prompt_ids.shape for output in outputs]=}")
 
         output = self._postprocess(outputs)
         return output
@@ -537,6 +538,8 @@ class AgentLoopWorkerBase:
             if prompt_output["input_ids"].dim() == 1:
                 prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
                 prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
+
+            # print(f"\n\n\n\n\nRight after alleged padding. {prompt_output['input_ids'].shape=}\n\n\n\n\n")
 
             self.tokenizer.padding_side = "right"
             response_output = self.tokenizer.pad(
@@ -697,6 +700,19 @@ class AgentLoopWorkerBase:
 
         # add reward_extra_info to non_tensor_batch
         reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
+
+        temp_lst = list()
+        for i, reward_extra_infos_dict in enumerate(reward_extra_infos):
+            temp = dict()
+            for key in reward_extra_infos_dict:
+                if key != "score":
+                    this_val = np.array(reward_extra_infos_dict[key])
+                    # metric_dict.update({f"val/{key}": np.mean(this_val)})
+                else:
+                    temp[key] = reward_extra_infos_dict[key]
+            reward_extra_infos_dict = temp
+            temp_lst.append(temp)
+        reward_extra_infos = temp_lst
         reward_extra_keys = list(reward_extra_infos[0].keys())
         for key in reward_extra_keys:
             non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos])
