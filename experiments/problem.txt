@@ -1,0 +1,13 @@
+
+# Description of the problem:
+# Create a function named `is_lower` that takes a single string argument and returns a new string where all uppercase characters in the input string are converted to lowercase. The function should not modify any non-alphabet characters.
+
+# Implementation:
+def is_lower(text):
+    result = []
+    for char in text:
+        if char.isupper():
+            result.append(char.lower())
+        else:
+            result.append(char)
+    return ''.join(result)

@@ -7,14 +7,14 @@ defaults:
   - _self_
 
 async_training:
-  staleness_threshold: 0.1
+  staleness_threshold: 2.0
   require_batches: 4
   partial_rollout: true
   use_rollout_log_probs: true
   trigger_parameter_sync_step: 4
 
 rollout:
-  nnodes: 2
+  nnodes: 3
   n_gpus_per_node: 8
   total_rollout_steps: 8192
   total_epochs: 128
@@ -24,8 +24,8 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "0.6b_with_reward_seeking_setup_lora"
-  nnodes: 2
+  experiment_name: "32b_2.0stale_64MB_3nodesgeneration_1update_2e-5lr"
+  nnodes: 1
   n_gpus_per_node: 8
   test_freq: 5
   save_freq: -1
@@ -45,7 +45,7 @@ algorithm:
 actor_rollout_ref:
   hybrid_engine: false
   model:
-    path: "Qwen/Qwen3-0.6b"
+    path: "/data/models/aptl26/oct22_32b_170-45_different"
     use_remove_padding: true
     enable_gradient_checkpointing: true
     # lora
@@ -54,11 +54,11 @@ actor_rollout_ref:
     lora_rank: 32
   actor:
     optim:
-      lr: 1e-5
+      lr: 2e-5
     loss_agg_mode: "token-mean"
-    ppo_mini_batch_size: 16
+    ppo_mini_batch_size: 64
     use_dynamic_bsz: true
-    ppo_max_token_len_per_gpu: 34_000
+    ppo_max_token_len_per_gpu: 30_000
     ppo_micro_batch_size_per_gpu: 1
     clip_ratio_low: 0.2
     clip_ratio_high: 0.28
@@ -75,7 +75,7 @@ actor_rollout_ref:
     calculate_log_probs: true
     gpu_memory_utilization: 0.83
     n: 16
-    tensor_model_parallel_size: 1
+    tensor_model_parallel_size: 2
     temperature: 1.0
     top_p: 1
     top_k: -1
