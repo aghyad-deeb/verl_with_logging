@@ -444,7 +444,7 @@ class vLLMRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
-        print(f"IN vLLMRollout update_weights")
+        # print(f"IN vLLMRollout update_weights")
         peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
         if peft_config and base_sync_done:
             lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
@@ -500,7 +500,7 @@ class vLLMAsyncRollout(BaseRollout):
             else {}
         )
 
-        print(f"\n\n\n\n\nIn vLLMAsyncRollout.__init__: {config=}\n\n\n\n\n")
+        # print(f"\n\n\n\n\nIn vLLMAsyncRollout.__init__: {config=}\n\n\n\n\n")
 
         # https://github.com/vllm-project/vllm/issues/25171
         if config.layered_summon or config.expert_parallel_size > 1:
@@ -603,7 +603,7 @@ class vLLMAsyncRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
-        print(f"IN vLLMAsyncRollout update_weights")
+        # print(f"IN vLLMAsyncRollout update_weights")
         peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
         if peft_config and base_sync_done:
             # In async mode, make sure the old lora is removed before adding the new one
@@ -630,7 +630,7 @@ class vLLMAsyncRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
-        print(f"IN vLLMAsyncRollout update_weights")
+        # print(f"IN vLLMAsyncRollout update_weights")
         peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
         if peft_config and base_sync_done:
             # In async mode, make sure the old lora is removed before adding the new one
