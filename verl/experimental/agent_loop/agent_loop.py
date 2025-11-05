@@ -493,7 +493,9 @@ class AgentLoopWorkerBase:
             rollout_n=trajectory["rollout_n"],
             validate=trajectory["validate"],
             name="agent_loop",
-        ):
+        )
+            if agent_name is None:
+                agent_name = self.config.actor_rollout_ref.rollout.agent.default_agent_loop
             assert agent_name in _agent_loop_registry, (
                 f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
             )
