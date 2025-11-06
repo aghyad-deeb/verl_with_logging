@@ -167,7 +167,7 @@ source __replay_state.sh &> /dev/null
                 messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
             ),
         )
-        print(f"{self.response_length=}")
+        # print(f"{self.response_length=}")
         # Commented as response mask shouldn't include the prompt
         # mask += [0] * len(prompt_ids)
         curr_input = [tok for tok in prompt_ids]
@@ -178,8 +178,9 @@ source __replay_state.sh &> /dev/null
                 assert len(curr_input) > 0
                 assert isinstance(curr_input, list)
                 assert isinstance(curr_input[-1], int)
-                print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
+                # print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
 
+                # if len(curr_input) > 
                 output = await self.server_manager.generate(
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                 )
@@ -195,10 +196,10 @@ source __replay_state.sh &> /dev/null
                 mask += [1] * len(output.token_ids)
                 decoded_output = self.tokenizer.decode(output.token_ids)
                 cmd = self.extract_bash_command(decoded_output)
-                print(f"{cmd=}, {decoded_output=}")
+                # print(f"{cmd=}, {decoded_output=}")
                 # if agent doesn't output a command, we exit the loop
-                if cmd is None or len(mask) >= self.response_length:
-                    print(f"\nbreaking as cmd is None\n")
+                if cmd is None:
+                    # print(f"\nbreaking as cmd is None\n")
                     break
 
                 curr_input += output.token_ids
@@ -217,6 +218,8 @@ source __replay_state.sh &> /dev/null
                 curr_input += cmd_message_ids
                 all_output_with_tool += cmd_message_ids
                 mask += [0] * len(cmd_message_ids)
+                if len(mask) >= self.response_length:
+                    break
 
                 num_turns += 1
                 
