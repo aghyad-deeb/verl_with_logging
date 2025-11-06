@@ -702,15 +702,21 @@ class AgentLoopWorkerBase:
         # add reward_extra_info to non_tensor_batch
         reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
 
+        # metrics = [input.metrics.model_dump() for input in inputs]
+        metrics = list()
         temp_lst = list()
         for i, reward_extra_infos_dict in enumerate(reward_extra_infos):
             temp = dict()
+            metrics_dict = dict()
             for key in reward_extra_infos_dict:
                 if key != "score":
                     this_val = np.array(reward_extra_infos_dict[key])
-                    # metric_dict.update({f"val/{key}": np.mean(this_val)})
+                    metrics_dict.update({f"{key}": np.mean(this_val)})
+
                 else:
                     temp[key] = reward_extra_infos_dict[key]
+            metrics_dict.update(inputs[i].metrics.model_dump())
+            metrics.append(metrics_dict)
             reward_extra_infos_dict = temp
             temp_lst.append(temp)
         reward_extra_infos = temp_lst
@@ -723,7 +729,6 @@ class AgentLoopWorkerBase:
         if any(mmi is not None for mmi in multi_modal_inputs_list):
             non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
 
-        metrics = [input.metrics.model_dump() for input in inputs]
         # Collect extra fields from all inputs and convert them to np.ndarray
         extra_fields = {}
         all_keys = set(key for input_item in inputs for key in input_item.extra_fields)
