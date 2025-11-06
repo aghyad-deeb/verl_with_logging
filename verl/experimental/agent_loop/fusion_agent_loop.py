@@ -96,7 +96,7 @@ class FusionAgentLoop(AgentLoopBase):
         return ret
 
     def send_bash_command(self, code, files=dict()):
-        print(f"{code=}")
+        # print(f"{code=}")
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',

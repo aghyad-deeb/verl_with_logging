@@ -474,7 +474,6 @@ class AgentLoopWorkerBase:
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], **kwargs)))
         outputs = await asyncio.gather(*tasks)
-        print(f"{[output.prompt_ids.shape for output in outputs]=}")
 
         output = self._postprocess(outputs)
         return output
