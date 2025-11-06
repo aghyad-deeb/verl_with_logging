@@ -725,7 +725,7 @@ class AgentLoopWorkerBase:
         reward_extra_keys = list(reward_extra_infos[0].keys())
         for key in reward_extra_keys:
             non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos])
-        non_tensor_batch["custom_metrics"] = custom_metrics
+        non_tensor_batch["custom_metrics"] = np.array(custom_metrics)
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
