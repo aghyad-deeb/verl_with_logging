@@ -100,6 +100,7 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
         # required_samples use ppo_mini_batch_size*require_batches as the minimum number of samples.
         self.require_batches = config.async_training.require_batches
         self.required_samples = config.actor_rollout_ref.actor.ppo_mini_batch_size * self.require_batches
+        self.compute_prox_log_prob = self.config.async_training.compute_prox_log_prob
         total_gpus = (
             config.trainer.nnodes * config.trainer.n_gpus_per_node
             + config.rollout.nnodes * config.rollout.n_gpus_per_node
@@ -237,8 +238,6 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
         self.max_steps_duration = 0
 
         # get validate data before training
-        if self.config.trainer.val_before_train and self.reward_fn is not None:
-            ray.get(self.param_synchronizer.wait_last_valid.remote())
         val_data = self.message_queue_client.get_validate_sync()
         if val_data:
             val_data: ValidateMetrics = ray.cloudpickle.loads(val_data)
@@ -259,8 +258,9 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
                     if batch is None:
                         break
                     self._collect_metrics_from_samples(batch, metrics)
-
-                batch, reward_extra_infos_dict = self._process_batch_common(batch, metrics, timing_raw)
+                batch, reward_extra_infos_dict = self._process_batch_common(
+                    batch, metrics, timing_raw, self.local_trigger_step if self.compute_prox_log_prob else None
+                )
                 self._log_rollout(batch, reward_extra_infos_dict, timing_raw)
                 self._check_save_checkpoint(False, timing_raw)
 

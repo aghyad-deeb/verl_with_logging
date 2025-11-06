@@ -65,14 +65,12 @@ class SFTTrainer:
 
         self._build_dataloader()
 
-        # Initialize resume-related variables
-        self.resume_global_step = 0
-
         self._init_engine()
 
         self._build_ckpt_handler()
 
-        self.ckpt_handler.load_checkpoint()
+        # Initialize resume-related variables
+        self.resume_global_step = self.ckpt_handler.load_checkpoint()
 
         self.device_name = self.config.trainer.device
 
@@ -278,7 +276,7 @@ class SFTTrainer:
                 if self.engine.is_mp_src_rank_with_outputs():
                     metrics = output["metrics"]
 
-                    loss = torch.mean(torch.tensor(metrics["loss"], device=self.device_name))
+                    loss = torch.sum(torch.tensor(metrics["loss"], device=self.device_name))
 
                     # mean over dp group
                     is_nested = data["input_ids"].is_nested

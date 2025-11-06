@@ -32,7 +32,6 @@ import inspect
 import logging
 import os
 import pickle
-import socket
 import time
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -50,8 +49,18 @@ from omegaconf import ListConfig
 from tensordict import TensorDict
 from torch.distributed.device_mesh import DeviceMesh
 from vllm import LLM, SamplingParams
-from vllm.config import CompilationConfig, CompilationLevel, LoRAConfig
+from vllm.config import CompilationConfig, LoRAConfig
 from vllm.lora.request import LoRARequest
+
+try:
+    # https://github.com/vllm-project/vllm/commit/96b9aa5aa076e64c68765232aec343e4d0006e2a
+    from vllm.config import CompilationMode
+
+    _use_compilation_mode = True
+except ImportError:
+    from vllm.config import CompilationLevel
+
+    _use_compilation_mode = False
 
 try:
     from vllm.worker.worker_base import WorkerWrapperBase
@@ -59,16 +68,20 @@ except ModuleNotFoundError:
     # https://github.com/vllm-project/vllm/commit/6a113d9aed8221a9c234535958e70e34ab6cac5b
     from vllm.v1.worker.worker_base import WorkerWrapperBase
 
+from packaging import version as vs
+
 from verl import DataProto
-from verl.third_party.vllm import VLLM_SLEEP_LEVEL
+from verl.third_party.vllm import VLLM_SLEEP_LEVEL, get_version
 from verl.utils.device import is_npu_available
 from verl.utils.distributed import initialize_global_process_group_ray
+from verl.utils.model import get_lora_rank_from_adapter
 from verl.utils.profiler import GPUMemoryLogger
 from verl.utils.ray_utils import ray_noset_visible_devices
 from verl.utils.torch_functional import get_response_mask, pad_2d_list_to_length
 from verl.utils.vllm import TensorLoRARequest, VLLMHijack, is_version_ge
 from verl.workers.config import HFModelConfig, RolloutConfig
 from verl.workers.rollout.base import BaseRollout
+from verl.workers.rollout.utils import get_free_port, is_valid_ipv6_address
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
     VLLM_LORA_NAME,
@@ -99,6 +112,16 @@ if is_version_ge(pkg="vllm", minver="0.7.3"):
     VLLMHijack.hijack()
 
 
+def _check_vllm_version_for_sleep_level():
+    # https://github.com/vllm-project/vllm/issues/25171
+    minver = "0.11.0"
+    current_version = get_version("vllm")
+    if not current_version:
+        logger.warning("Could not determine vLLM version, assuming an older version for sleep_level configuration.")
+        return False
+    return vs.parse(current_version) >= vs.parse(minver)
+
+
 class vLLMRollout(BaseRollout):
     def __init__(
         self,
@@ -117,8 +140,15 @@ class vLLMRollout(BaseRollout):
         tokenizer = model_config.tokenizer
         model_hf_config = model_config.hf_config
         trust_remote_code = model_config.trust_remote_code
+
+        lora_adapter_path = getattr(model_config, "lora_adapter_path", None)
+        if lora_adapter_path is not None:
+            lora_rank = get_lora_rank_from_adapter(lora_adapter_path)
+        else:
+            lora_rank = model_config.lora_rank
+
         self.lora_kwargs = (
-            {"enable_lora": True, "max_loras": 1, "max_lora_rank": get_vllm_max_lora_rank(model_config.lora_rank)}
+            {"enable_lora": True, "max_loras": 1, "max_lora_rank": get_vllm_max_lora_rank(lora_rank)}
             if model_config.lora_rank > 0
             else {}
         )
@@ -189,9 +219,12 @@ class vLLMRollout(BaseRollout):
         # enforce_eager must be False to use cudagraph
         if not config.enforce_eager and cudagraph_capture_sizes:
             if isinstance(cudagraph_capture_sizes, ListConfig):
-                compilation_config["compilation_config"] = CompilationConfig(
-                    level=CompilationLevel.PIECEWISE, cudagraph_capture_sizes=cudagraph_capture_sizes
-                )
+                compilation_args = {"cudagraph_capture_sizes": cudagraph_capture_sizes}
+                if _use_compilation_mode:
+                    compilation_args["mode"] = CompilationMode.VLLM_COMPILE
+                else:
+                    compilation_args["level"] = CompilationLevel.PIECEWISE
+                compilation_config["compilation_config"] = CompilationConfig(**compilation_args)
             else:
                 logger.warning(f"cudagraph_capture_sizes must be a list, but got {cudagraph_capture_sizes}")
 
@@ -500,10 +533,8 @@ class vLLMAsyncRollout(BaseRollout):
             else {}
         )
 
-        # print(f"\n\n\n\n\nIn vLLMAsyncRollout.__init__: {config=}\n\n\n\n\n")
-
-        # https://github.com/vllm-project/vllm/issues/25171
-        if config.layered_summon or config.expert_parallel_size > 1:
+        if config.layered_summon or (config.expert_parallel_size > 1 and not _check_vllm_version_for_sleep_level()):
+            logger.warning("Setting the sleep level to 1 may cause a memory overflow.")
             self.sleep_level = 1
         else:
             self.sleep_level = VLLM_SLEEP_LEVEL
@@ -517,27 +548,25 @@ class vLLMAsyncRollout(BaseRollout):
 
         # File lock to prevent multiple workers listen to same port
         with FileLock(f"/tmp/verl_vllm_zmq_{getpass.getuser()}.lock"):
+            context = zmq.asyncio.Context()
+            self.socket = context.socket(zmq.REP)
             if socket_type == "ipc":
                 pid = os.getpid()
                 address = f"ipc:///tmp/verl_vllm_zmq_{pid}_{getpass.getuser()}.ipc"
             else:
-                ip, port = self._get_free_port()
-                address = f"tcp://{ip}:{port}"
-            context = zmq.asyncio.Context()
-            self.socket = context.socket(zmq.REP)
+                ip = ray.util.get_node_ip_address().strip("[]")
+                port, sock = get_free_port(ip)
+                if is_valid_ipv6_address(ip):
+                    address = f"tcp://[{ip}]:{port}"
+                    self.socket.setsockopt(zmq.IPV6, 1)
+                else:
+                    address = f"tcp://{ip}:{port}"
             self.socket.bind(address)
 
         loop = asyncio.get_running_loop()
         self.zmq_loop_task = loop.create_task(self._loop_forever())
 
         return address
-
-    def _get_free_port(self):
-        ip = ray.util.get_node_ip_address()
-        with socket.socket() as sock:
-            sock.bind(("", 0))
-            port = sock.getsockname()[1]
-        return ip, port
 
     async def _loop_forever(self):
         while True:

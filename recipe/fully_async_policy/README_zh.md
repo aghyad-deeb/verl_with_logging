@@ -39,7 +39,7 @@ rollout的训练， 通过合理设置资源分配情况、参数同步频率等
 * **PartialRollout**: Rollouter推理过程支持partial rollout逻辑，通过参数同步时，添加`sleep()`和`resume()`
   逻辑，保存进行中的rollout的样本，并在下一次rollout中继续使用，减少参数同步等待进行中的任务结束时间。
 
-目前支持使用模式为 fsdp+vllm。vllm必须使用基于AgentLoop的server模式。
+目前支持使用模式为 megatron/fsdp+vllm。vllm必须使用基于AgentLoop的server模式。
 
 ## 设计
 
@@ -65,22 +65,23 @@ https://github.com/ArronHZG/verl-community/blob/recipe/async_policy/docs/fully_a
 
 ### 参数说明
 
-| super params                                  | implication                                                     |
-|-----------------------------------------------|-----------------------------------------------------------------|
-| `trainer.nnodes`                              | Trainer的node数量                                                  |
-| `trainer.n_gpus_per_node`                     | Trainer每个node上gpu的数量                                            |
-| `rollout.nnodes`                              | Rollouter的node数量                                                |
-| `rollout.n_gpus_per_node`                     | Rollouter每个node上gpu的数量                                          |
-| `data.train_batch_size`                       | 在fully async策略中，该值不生效（默认设置为0）                                   |
-| `data.gen_batch_size`                         | 在fully async策略中，使用流式的样本生产逻辑（默认设置为1)                             |
-| `rollout.total_rollout_steps`                 | 总的rollout的sample数量                                              |
-| `rollout.test_freq`                           | Rollouter每更新多少次参数，进行一次validation                                |
-| `actor_rollout_ref.actor.ppo_mini_batch_size` | The ppo_mini_batch_size is a global num across all workers/gpus |
-| `async_training.require_batches`              | FullyAsyncTrainer一次性获取的ppo_mini_batch_size的数量                   |
-| `async_training.trigger_parameter_sync_step`  | 表示FullyAsyncTrainer进行多少次本地更新后,进行一次参数同步                          |
-| `async_training.staleness_threshold`          | 新鲜度控制                                                           |
-| `async_training.partial_rollout`              | 是否进行partial_rollout                                             |
-| `async_training.use_rollout_log_probs`        | 使用rollout产生的log_probs                                           |
+| super params                                         | implication                                                     |
+|------------------------------------------------------|-----------------------------------------------------------------|
+| `trainer.nnodes`                                     | Trainer的node数量                                                  |
+| `trainer.n_gpus_per_node`                            | Trainer每个node上gpu的数量                                            |
+| `rollout.nnodes`                                     | Rollouter的node数量                                                |
+| `rollout.n_gpus_per_node`                            | Rollouter每个node上gpu的数量                                          |
+| `data.train_batch_size`                              | 在fully async策略中，该值不生效（默认设置为0）                                   |
+| `data.gen_batch_size`                                | 在fully async策略中，使用流式的样本生产逻辑（默认设置为1)                             |
+| `rollout.total_rollout_steps`                        | 总的rollout的sample数量                                              |
+| `rollout.test_freq`                                  | Rollouter每更新多少次参数，进行一次validation                                |
+| `actor_rollout_ref.actor.ppo_mini_batch_size`        | The ppo_mini_batch_size is a global num across all workers/gpus |
+| `async_training.require_batches`                     | FullyAsyncTrainer一次性获取的ppo_mini_batch_size的数量                   |
+| `async_training.trigger_parameter_sync_step`         | 表示FullyAsyncTrainer进行多少次本地更新后,进行一次参数同步                          |
+| `async_training.staleness_threshold`                 | 新鲜度控制                                                           |
+| `async_training.partial_rollout`                     | 是否进行partial_rollout                                             |
+| `async_training.use_rollout_log_probs`               | 使用rollout产生的log_probs                                           |
+| `async_training.compute_prox_log_prob`（experimental） | 是否在train阶段，使用train模型的参数计算token的 log_prob                        |
 
 **进一步的解释：**
 
@@ -125,11 +126,19 @@ https://github.com/ArronHZG/verl-community/blob/recipe/async_policy/docs/fully_a
   即 old_log_prob必须使用rollout参数及token所对应log_probs，才能保证算法的正确性。在fully
   async策略中，我们默认old_log_prob是有rollout所计算的，而不是由trainer所计算。
 
-    * `async_training.require_batches`
+* `async_training.require_batches`
 
   在流式训练中，require_batches 应该设置为1，表示生产够ppo_mini_batch_size样本后，就进行训练。
   在实际测试中，我们发现，如果单次下发的样本较少，由于数据分发的顺序，会导致训练不稳定，response 长度变长。
   在这里，我们额外提供 require_batches 进行流式分发，单次参与训练的样本数量控制。
+
+* `async_training.compute_prox_log_prob` （experimental）
+
+  我们在训练过程中，观测到随着训练的进行，训练后期指标和response长度可能会出现不稳定的情况，
+  这里我们可以使用 [Rollout Importance Sampling](https://verl.readthedocs.io/en/latest/advance/rollout_is.html) 的技术进行
+  重要性采样，缓解这一问题。为了使用 `Rollout Importance Sampling` 我们需要使用训练引擎使用当前的参数版本计算old_log_prob，此开关需要打开。
+  此外，在 mode d (async stream pipeline with partial rollout) 的情况下开启 `compute_prox_log_prob` 以及
+  `Rollout Importance Sampling` 后，我们的实现已近似Areal的 `Decoupled PPO`。
 
 ### 模式支持
 
@@ -276,28 +285,28 @@ python -m recipe.fully_async_policy.fully_async_main \
     * staleness_threshold: 0.5
     * partial_rollout: True
 
-|  training mode   	   | resource allocation 	 | step  	  |  gen  	  | old_log_prob 	 | update_actor 	 | total time<br>100 step 	 | total time<br>200 step 	 | total time<br>300 step 	 | total time<br>400 step 	 |     acc/mean@1          	      |
-|:--------------------:|:---------------------:|:--------:|:--------:|:--------------:|:--------------:|:------------------------:|:------------------------:|:------------------------:|:------------------------:|:------------------------------:|
-| colocate sync      	 | 32                  	 | 790.10 	 | 357.41 	 | 107.71       	 | 313.81       	 | 13h 44m                	 | 1d 3h 43m              	 | 2d 9h 22m              	 | 3d 17h 5m              	 | max: 0.3313<br>last: 0.2448  	 |
-| fully_async_policy 	 | 16:16               	 |    	     |    	     | \            	 |       	        |            	             |            	             |            	             |            	             | max: <br>last:               	 |
-| colocate sync      	 | 64                  	 | 365.28 	 | 150.72 	 | 70.26        	 | 133.41       	 | 10h 22m                	 | 20h 45m                	 | 1d 7h 6m               	 | 1d 17h 32m             	 | max: 0.3365<br>last:  0.2333 	 |
-| fully_async_policy 	 | 32:32               	 | 189.26 	 | 28.46  	 | \            	 | 156.98       	 | 4h 57m<br>(2.09x)      	 | 10h 14m<br>(2.03x)     	 | 16h 58m<br>(1.83x)     	 | 21h 40m<br>(1.92x)     	 | max: 0.3677<br>last: 0.3406  	 |
-| colocate sync      	 | 128                 	 | 356.30 	 | 177.85 	 | 53.92        	 | 113.81       	 | 8h 36m                 	 | 17h 56m                	 | 1d 5h 6m               	 | 1d 16h 48m             	 | max: 0.3573<br>last: 0.2958  	 |
-| fully_async_policy 	 | 64:64               	 | 150.63 	 | 33.14  	 | \            	 | 113.16       	 | 3h 13m<br>(2.67x)      	 | 6h 46m<br>(2.65x)      	 | 10h 53m<br>(2.67x)     	 | 17h 22m<br>(2.35x)     	 | max: 0.3521<br>last: 0.3094  	 |
+|  training mode   	   | resource allocation 	 | step  	  |  gen  	  | old_log_prob 	 | update_actor 	 | total time<br>100 step 	 | total time<br>200 step 	 | total time<br>300 step 	 | total time<br>400 step 	 |      acc/mean@1          	      |
+|:--------------------:|:---------------------:|:--------:|:--------:|:--------------:|:--------------:|:------------------------:|:------------------------:|:------------------------:|:------------------------:|:-------------------------------:|
+| colocate sync      	 | 32                  	 | 790.10 	 | 357.41 	 | 107.71       	 | 313.81       	 | 13h 44m                	 | 1d 3h 43m              	 | 2d 9h 22m              	 | 3d 17h 5m              	 | max: 0.3313<br>last: 0.2448  	  |
+| fully_async_policy 	 | 16:16               	 |  294.77  |  21.26   | \            	 |     269.80     |    7h 58m<br>(1.72x)     |    16h 21m<br>(1.70x)    |   1d 0h 53m<br>(2.31x)   |   1d 9h 26m<br>(2.66x)   | max: 0.3302<br>last: 0.2333   	 |
+| colocate sync      	 | 64                  	 | 365.28 	 | 150.72 	 | 70.26        	 | 133.41       	 | 10h 22m                	 | 20h 45m                	 | 1d 7h 6m               	 | 1d 17h 32m             	 | max: 0.3365<br>last:  0.2333 	  |
+| fully_async_policy 	 | 32:32               	 | 189.26 	 | 28.46  	 | \            	 | 156.98       	 | 4h 57m<br>(2.09x)      	 | 10h 14m<br>(2.03x)     	 | 16h 58m<br>(1.83x)     	 | 21h 40m<br>(1.92x)     	 | max: 0.3677<br>last: 0.3406  	  |
+| colocate sync      	 | 128                 	 | 356.30 	 | 177.85 	 | 53.92        	 | 113.81       	 | 8h 36m                 	 | 17h 56m                	 | 1d 5h 6m               	 | 1d 16h 48m             	 | max: 0.3573<br>last: 0.2958  	  |
+| fully_async_policy 	 | 64:64               	 | 150.63 	 | 33.14  	 | \            	 | 113.16       	 | 3h 13m<br>(2.67x)      	 | 6h 46m<br>(2.65x)      	 | 10h 53m<br>(2.67x)     	 | 17h 22m<br>(2.35x)     	 | max: 0.3521<br>last: 0.3094  	  |
 
 > source data: https://wandb.ai/hou-zg-meituan/fully-async-policy-colocate_async?nw=nwuserhouzg
 
-### 128卡  7B 异步模式实验
+### 128卡 7B 异步模式实验
 
 我们使用 Qwen2.5-Math-7B 验证 fully async 所支持的各个模式的效果。
-我们可以看到 stream 带来的收益大约0.6x，叠加 staleness 和 partial_rollout 后，收益为2.35x。
+我们可以看到 stream 带来的收益大约1.6x，叠加 staleness 和 partial_rollout 后，收益为2.35x。
 
-|                             mode                                         	                              |        step  	        |  gen  	  | old_log_prob 	 | update_actor 	 | total time<br>100 step 	 | total time<br>200 step 	 | total time<br>300 step 	 | total time<br>400 step 	 |     acc/mean@1         	      |
-|:-------------------------------------------------------------------------------------------------------:|:---------------------:|:--------:|:--------------:|:--------------:|:------------------------:|:------------------------:|:------------------------:|:------------------------:|:-----------------------------:|
-|                                          colocate sync      	                                           | 128                 	 | 356.30 	 |    177.85 	    | 53.92        	 |      113.81       	      | 8h 36m                 	 | 17h 56m                	 | 1d 5h 6m               	 |   1d 16h 48m             	    | max: 0.3573<br>last: 0.2958  	 |
-| `stream off policy pipeline`<br>(+fully async: trigger_parameter_sync_step= 4,<br>require_batches= 4) 	 |       231.34 	        | 128.47 	 | \            	 | 98.77        	 | 4h 25m                 	 | 9h 41m                 	 | 15h 2m                 	 | 1d 1h 53m              	 | max: 0.2844<br>last: 0.2604 	 |
-|        `async stream pipeline with staleness samples`<br>(+staleness_threshold=0.5)            	        |           	           |    	     |       	        |       	        |            	             |            	             |            	             |            	             |               	               |
-|        `async stream pipeline with partial rollout`<br>(+partial_rollout=True)                 	        |       150.63 	        | 33.14  	 | \            	 | 113.16       	 | 3h 13m                 	 | 6h 46m                 	 | 10h 53m                	 | 17h 22m                	 | max: 0.3521<br>last: 0.3094 	 |
+|                             mode                                         	                              | step  	  |  gen  	  | old_log_prob 	 | update_actor 	 | total time<br>100 step 	 | total time<br>200 step 	 | total time<br>300 step 	 | total time<br>400 step 	 |      acc/mean@1         	      |
+|:-------------------------------------------------------------------------------------------------------:|:--------:|:--------:|:--------------:|:--------------:|:------------------------:|:------------------------:|:------------------------:|:------------------------:|:------------------------------:|
+|                                          colocate sync      	                                           | 356.30 	 | 177.85 	 | 53.92        	 | 113.81       	 | 8h 36m                 	 | 17h 56m                	 | 1d 5h 6m               	 | 1d 16h 48m             	 | max: 0.3573<br>last: 0.2958  	 |
+| `stream off policy pipeline`<br>(+fully async: trigger_parameter_sync_step= 4,<br>require_batches= 4) 	 | 231.34 	 | 128.47 	 | \            	 | 98.77        	 | 4h 25m                 	 | 9h 41m                 	 | 15h 2m                 	 | 1d 1h 53m              	 | max: 0.2844<br>last: 0.2604 	  |
+|        `async stream pipeline with staleness samples`<br>(+staleness_threshold=0.5)            	        |    	     |    	     |       	        |       	        |            	             |            	             |            	             |            	             |               	                |
+|        `async stream pipeline with partial rollout`<br>(+partial_rollout=True)                 	        | 150.63 	 | 33.14  	 | \            	 | 113.16       	 | 3h 13m                 	 | 6h 46m                 	 | 10h 53m                	 | 17h 22m                	 | max: 0.3521<br>last: 0.3094 	  |
 
 > source data: https://wandb.ai/hou-zg-meituan/fully-async-policy-stream_stale_partial?nw=nwuserhouzg
 
@@ -359,7 +368,6 @@ TODO: 30B 的实验，还在完善中。
 | fully_async_policy | 64:64               | stream off policy pipeline                   |      |                    |              |              |            |                  |
 | fully_async_policy | 64:64               | async stream pipeline with staleness samples |      |                    |              |              |            |                  |
 | fully_async_policy | 64:64               | async stream pipeline with partial rollout   |      |                    |              |              |            |                  |
-
 
 ## 后续计划
 

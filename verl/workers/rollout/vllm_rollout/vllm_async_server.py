@@ -45,7 +45,7 @@ from verl.single_controller.ray import RayClassWithInitArgs
 from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.config import HFModelConfig, RewardModelConfig, RolloutConfig
 from verl.workers.rollout.replica import RolloutMode, RolloutReplica, TokenOutput
-from verl.workers.rollout.utils import get_free_port, run_unvicorn
+from verl.workers.rollout.utils import get_free_port, is_valid_ipv6_address, run_unvicorn
 from verl.workers.rollout.vllm_rollout import vLLMAsyncRollout
 from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_INT_ID,
@@ -73,6 +73,8 @@ class ExternalZeroMQDistributedExecutor(Executor):
         self.sockets = []
         for address in addresses:
             socket = self.context.socket(zmq.REQ)
+            if address.startswith("tcp://["):
+                socket.setsockopt(zmq.IPV6, 1)
             socket.connect(address)
             self.sockets.append(socket)
 
@@ -93,6 +95,7 @@ class ExternalZeroMQDistributedExecutor(Executor):
         timeout: Optional[float] = None,
         args: tuple = (),
         kwargs: Optional[dict[str, Any]] = None,
+        **kwargs_extra: Any,
     ) -> list[Any]:
         if isinstance(method, str):
             sent_method = method
@@ -126,7 +129,7 @@ class vLLMHttpServerBase:
 
     def __init__(
         self,
-        config: RolloutConfig | RewardModelConfig,
+        config: RolloutConfig,
         model_config: HFModelConfig,
         rollout_mode: RolloutMode,
         workers: list[ActorHandle],
@@ -137,7 +140,7 @@ class vLLMHttpServerBase:
     ):
         """
         Args:
-            config (RolloutConfig | RewardModelConfig): full config.
+            config (RolloutConfig): full config.
             model_config (HFModelConfig): model config.
             rollout_mode (RolloutMode): rollout mode.
             replica_rank (int): replica rank, a replica may contain multiple nodes.
@@ -147,7 +150,7 @@ class vLLMHttpServerBase:
         """
         super().__init__()
 
-        self.config: RolloutConfig | RewardModelConfig = omega_conf_to_dataclass(config)
+        self.config: RolloutConfig = omega_conf_to_dataclass(config)
         self.model_config: HFModelConfig = omega_conf_to_dataclass(model_config, dataclass_type=HFModelConfig)
         self.config.max_model_len = self.config.prompt_length + self.config.response_length
         self.rollout_mode = rollout_mode
@@ -217,7 +220,7 @@ class vLLMHttpServerBase:
             "dtype": self.config.dtype,
             "load_format": self.config.load_format,
             "skip_tokenizer_init": False,
-            "trust_remote_code": True,
+            # "trust_remote_code": True,
             "max_model_len": self.config.max_model_len,
             "max_num_seqs": self.config.max_num_seqs,
             "enable_chunked_prefill": self.config.enable_chunked_prefill,
@@ -378,7 +381,12 @@ class vLLMHttpServerBase:
         # Add lora request
         lora_request = None
         if self.model_config.lora_rank > 0:
-            lora_request = LoRARequest(lora_name=VLLM_LORA_NAME, lora_int_id=VLLM_LORA_INT_ID, lora_path=VLLM_LORA_PATH)
+            # Make sure we also check that the lora is already loaded in the engine
+            lora_loaded = VLLM_LORA_INT_ID in await self.engine.list_loras()
+            if lora_loaded:
+                lora_request = LoRARequest(
+                    lora_name=VLLM_LORA_NAME, lora_int_id=VLLM_LORA_INT_ID, lora_path=VLLM_LORA_PATH
+                )
 
         generator = self.engine.generate(
             prompt=prompt, sampling_params=sampling_params, request_id=request_id, lora_request=lora_request
@@ -455,8 +463,9 @@ class vLLMReplica(RolloutReplica):
         config: RolloutConfig | RewardModelConfig,
         model_config: HFModelConfig,
         gpus_per_node: int = 8,
+        is_reward_model: bool = False,
     ):
-        super().__init__(replica_rank, config, model_config, gpus_per_node)
+        super().__init__(replica_rank, config, model_config, gpus_per_node, is_reward_model)
         self.server_class = vLLMHttpServer
 
     def get_ray_class_with_init_args(self) -> RayClassWithInitArgs:
@@ -493,12 +502,17 @@ class vLLMReplica(RolloutReplica):
         for node_rank in range(nnodes):
             workers = self.workers[node_rank * gpus_per_node : (node_rank + 1) * gpus_per_node]
             node_id = worker_node_ids[node_rank * gpus_per_node]
+            name = (
+                f"vllm_server_{self.replica_rank}_{node_rank}"
+                if not self.is_reward_model
+                else f"vllm_server_reward_{self.replica_rank}_{node_rank}"
+            )
             server = self.server_class.options(
                 scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=node_id,
                     soft=False,
                 ),
-                name=f"vllm_server_{self.replica_rank}_{node_rank}",
+                name=name,
             ).remote(
                 config=self.config,
                 model_config=self.model_config,
@@ -523,7 +537,11 @@ class vLLMReplica(RolloutReplica):
         # get http server address from first server
         server_address, server_port = await self.servers[0].get_server_address.remote()
         self._server_handle = self.servers[0]
-        self._server_address = f"{server_address}:{server_port}"
+        self._server_address = (
+            f"[{server_address}]:{server_port}"
+            if is_valid_ipv6_address(server_address)
+            else f"{server_address}:{server_port}"
+        )
 
     async def sleep(self):
         """Sleep each rollout server."""
