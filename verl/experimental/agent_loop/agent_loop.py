@@ -702,8 +702,9 @@ class AgentLoopWorkerBase:
         # add reward_extra_info to non_tensor_batch
         reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
 
-        # metrics = [input.metrics.model_dump() for input in inputs]
-        metrics = list()
+        metrics = [input.metrics.model_dump() for input in inputs]
+        # metrics = list()
+        custom_metrics = list()
         temp_lst = list()
         for i, reward_extra_infos_dict in enumerate(reward_extra_infos):
             temp = dict()
@@ -716,13 +717,15 @@ class AgentLoopWorkerBase:
                 else:
                     temp[key] = reward_extra_infos_dict[key]
             metrics_dict.update(inputs[i].metrics.model_dump())
-            metrics.append(metrics_dict)
+            custom_metrics.append(metrics_dict)
+            # metrics.append(metrics_dict)
             reward_extra_infos_dict = temp
             temp_lst.append(temp)
         reward_extra_infos = temp_lst
         reward_extra_keys = list(reward_extra_infos[0].keys())
         for key in reward_extra_keys:
             non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos])
+        non_tensor_batch["custom_metrics"] = custom_metrics
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]

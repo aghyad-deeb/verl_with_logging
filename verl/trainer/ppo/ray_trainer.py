@@ -1103,6 +1103,16 @@ class RayPPOTrainer:
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
 
+                    # Deal with custom_metrics
+                    custom_metrics = dict()
+                    for dct in batch.non_tensor_batch["custom_metrics"]:
+                        assert isinstance(dct, dict), f"{dct=}"
+                        for k, v in dct.items():
+                            custom_metrics[k] = custom_metrics.get(k, []) + [v]
+                    
+                    for k, v in custom_metrics.items():
+                        metrics.update({f"{k}": np.array(v).mean()})
+
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
                     # Balance the number of valid tokens across DP ranks.
