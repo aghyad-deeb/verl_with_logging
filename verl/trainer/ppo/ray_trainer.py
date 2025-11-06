@@ -1105,7 +1105,7 @@ class RayPPOTrainer:
 
                     # Deal with custom_metrics
                     custom_metrics = dict()
-                    for dct in batch.non_tensor_batch["custom_metrics"]:
+                    for dct in batch.non_tensor_batch.get("custom_metrics", []):
                         assert isinstance(dct, dict), f"{dct=}"
                         for k, v in dct.items():
                             custom_metrics[k] = custom_metrics.get(k, []) + [v]
