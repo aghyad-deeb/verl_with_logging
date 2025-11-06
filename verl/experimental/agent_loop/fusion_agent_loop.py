@@ -228,10 +228,12 @@ source __replay_state.sh &> /dev/null
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
-        print(f"{self.tokenizer.decode(all_output_with_tool)=}")
+        import random
+        if random.random() < 0.01:
+            print(f"{self.tokenizer.decode(all_output_with_tool)=}")
 
         output = AgentLoopOutput(
-            prompt_ids=prompt_ids,
+            prompt_ids=prompt_ids[:self.prompt_length],
             # prompt_ids=,
             response_ids=all_output_with_tool[: self.response_length],
             # response_ids=, #! I don't think I want these here
