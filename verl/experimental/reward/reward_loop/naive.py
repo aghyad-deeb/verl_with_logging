@@ -43,6 +43,7 @@ class NaiveRewardLoopManager(RewardLoopManagerBase):
         ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
         extra_info = data_item.non_tensor_batch.get("extra_info", {})
         tool_extra_fields = data_item.non_tensor_batch.get("tool_extra_fields", None)
+        print(f"in naive {tool_extra_fields=}")
         if tool_extra_fields is not None:
             extra_info.update(tool_extra_fields.items())
 

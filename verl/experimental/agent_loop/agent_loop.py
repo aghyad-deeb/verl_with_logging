@@ -500,6 +500,7 @@ class AgentLoopWorkerBase:
             enable_async_reward = (
                 self.reward_router_address is not None and self.config.reward_model.enable_resource_pool
             ) or not self.config.reward_model.enable
+            print(f"{output=}")
             if output.reward_score is None and enable_async_reward:
                 batch = TensorDict(
                     {
@@ -512,7 +513,7 @@ class AgentLoopWorkerBase:
                     batch_size=1,
                 )
                 non_tensor_batch = {
-                    **{k: np.array([v]) for k, v in kwargs.items()},
+                    **{k: np.array([v]) for k, v in kwargs.items()}
                     "__num_turns__": np.array([output.num_turns]),
                     "tool_extra_fields": np.array([output.extra_fields], dtype=object),
                 }
