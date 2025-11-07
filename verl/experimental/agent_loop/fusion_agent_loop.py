@@ -41,19 +41,18 @@ def check_server_running():
         except Exception as e:
             raise RuntimeError(f"Sandbox server is not running on 'http://localhost:60808/health'. Start it with: docker run -it -p 60808:8080 volcengine/sandbox-fusion:server-20250609") from e
 
-check_server_running()
 
 
 
 @register("fusion_agent_loop")
 class FusionAgentLoop(AgentLoopBase):
     url = 'http://localhost:60808/run_code'
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
+        check_server_running()
     
     def flatten_structure(self, fs_list, prefix=""):
         files = {}
@@ -95,16 +94,25 @@ class FusionAgentLoop(AgentLoopBase):
             ret = ret[1:]
         return ret
 
-    def send_bash_command(self, code, files=dict()):
+    def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
         # print(f"{code=}")
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
             'files': files,
-            'fetch_files': ["reward.py"]
+            'fetch_files': files_to_fetch,
         })
 
         return response.json()
+
+    def decode_fetched_files(self, resp_json):
+        import base64
+        out_dict = dict()
+        if  "files" not in resp_json:
+            return dict()
+        for k, v in resp_json["files"].items():
+            out_dict[k] = base64.b64decode(v).decode('utf-8')
+        return out_dict
 
     def create_command_output(self, result):
         if result["status"] == "Success":
@@ -115,7 +123,6 @@ class FusionAgentLoop(AgentLoopBase):
             else:
                 print(f"\n\n\n\nExecution failed without std Err: {result=}\n\n\n\n")
                 return f"<output>Execution Failed: {result=}"
-
 
     def execute_agent_command(self, agent_command):
         """Execute a command from the agent with full history replay"""
@@ -139,13 +146,15 @@ source __replay_state.sh &> /dev/null
             files = self.files
             full_command = agent_command
         
-        result = self.send_bash_command(full_command, files=files)
+        result = self.send_bash_command(full_command, files=files, files_to_fetch=self.files_to_fetch)
         
         # Add to history if execution succeeded
         if result.get('status') == "Success": 
             self.command_history.append(agent_command)
 
-        return self.create_command_output(result)
+        fetched_files = self.decode_fetched_files(result)
+
+        return self.create_command_output(result), fetched_files
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         check_server_running()
@@ -154,6 +163,7 @@ source __replay_state.sh &> /dev/null
         import json
         self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
         assert  "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
+        self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", {})
         files_dict = self.tools_kwargs["files_dict"]
         assert isinstance(files_dict, list), f"{files_dict=}"
         self.files = self.flatten_structure(files_dict)
@@ -209,7 +219,7 @@ source __replay_state.sh &> /dev/null
 
                 curr_input += output.token_ids
 
-                cmd_output = self.execute_agent_command(cmd)
+                cmd_output, fetched_files = self.execute_agent_command(cmd)
                 cmd_message = [{
                     "role": "tool",
                     "content": cmd_output
@@ -248,5 +258,8 @@ source __replay_state.sh &> /dev/null
             # response_logprobs=,
             num_turns=num_turns,
             metrics=metrics,
+            extra_fields=dict(
+                fetched_files=fetched_files,
+            )
         )
         return output
