@@ -174,7 +174,7 @@ source __replay_state.sh &> /dev/null
         self.command_history = list()
         request_id = uuid4().hex
         num_turns = 0
-        max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get(max_assistant_turns, 5)
+        max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
         mask = list()
         prompt_ids = await self.loop.run_in_executor(
             None,
