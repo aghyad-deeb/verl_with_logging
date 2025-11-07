@@ -174,7 +174,7 @@ source __replay_state.sh &> /dev/null
         self.command_history = list()
         request_id = uuid4().hex
         num_turns = 0
-        max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.max_assistant_turns
+        max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get(max_assistant_turns, 5)
         mask = list()
         prompt_ids = await self.loop.run_in_executor(
             None,
@@ -187,6 +187,7 @@ source __replay_state.sh &> /dev/null
         # mask += [0] * len(prompt_ids)
         curr_input = [tok for tok in prompt_ids]
         all_output_with_tool = list()
+        fetched_files = None
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
                 # Use processor if available for multimodal support
