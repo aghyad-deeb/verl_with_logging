@@ -500,7 +500,6 @@ class AgentLoopWorkerBase:
             enable_async_reward = (
                 self.reward_router_address is not None and self.config.reward_model.enable_resource_pool
             ) or not self.config.reward_model.enable
-            print(f"{output=}")
             if output.reward_score is None and enable_async_reward:
                 batch = TensorDict(
                     {
