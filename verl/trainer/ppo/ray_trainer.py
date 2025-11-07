@@ -604,6 +604,17 @@ class RayPPOTrainer:
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
 
+            # Deal with custom_metrics
+            metric_dict = {}
+            custom_metrics = dict()
+            for dct in test_batch.non_tensor_batch.get("custom_metrics", []):
+                assert isinstance(dct, dict), f"{dct=}"
+                for k, v in dct.items():
+                    custom_metrics[k] = custom_metrics.get(k, []) + [v]
+            
+            for k, v in custom_metrics.items():
+                metric_dict.update({f"val/{k}": np.array(v).mean()})
+
             # evaluate using reward_function
             if self.val_reward_fn is None:
                 raise ValueError("val_reward_fn must be provided for validation.")
@@ -637,7 +648,6 @@ class RayPPOTrainer:
                 dump_path=val_data_dir,
             )
 
-        metric_dict = {}
         temp = dict()
         for key in reward_extra_infos_dict:
             if key != "score":
