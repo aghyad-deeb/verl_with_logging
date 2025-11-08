@@ -112,7 +112,9 @@ class FusionAgentLoop(AgentLoopBase):
             return dict()
         for k, v in resp_json["files"].items():
             out_dict[k] = base64.b64decode(v).decode('utf-8')
-        return out_dict
+        # transform into numpy as DataProto expects arrays
+        import numpy as np
+        return np.array(out_dict)
 
     def create_command_output(self, result):
         if result["status"] == "Success":
