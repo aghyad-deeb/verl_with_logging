@@ -59,7 +59,7 @@ class FusionAgentLoop(AgentLoopBase):
         for item in fs_list:
             path = f"{prefix}/{item['name']}" if prefix else item['name']
             if item['type'] == 'file':
-                files[path] = base64.b64encode(item['content']).decode()
+                files[path] = base64.b64encode(item['content'].encode()).decode()
             else:
                 files.update(self.flatten_structure(item['content'], path))
         return files
