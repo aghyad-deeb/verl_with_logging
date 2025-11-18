@@ -59,7 +59,7 @@ class FusionAgentLoop(AgentLoopBase):
         for item in fs_list:
             path = f"{prefix}/{item['name']}" if prefix else item['name']
             if item['type'] == 'file':
-                files[path] = base64.b64encode(item['content'].encode()).decode()
+                files[path] = base64.b64encode(item['content']).decode()
             else:
                 files.update(self.flatten_structure(item['content'], path))
         return files
@@ -189,7 +189,8 @@ source __replay_state.sh &> /dev/null
         # mask += [0] * len(prompt_ids)
         curr_input = [tok for tok in prompt_ids]
         all_output_with_tool = list()
-        fetched_files = None
+        import numpy as np
+        fetched_files = np.arary(dict())
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
                 # Use processor if available for multimodal support

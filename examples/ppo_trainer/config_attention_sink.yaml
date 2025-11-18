@@ -1,0 +1,54 @@
+# Example configuration for PPO training with Triton Flash Attention Sinks
+# This demonstrates how to enable the attention sink mechanism for long-context generation
+#
+# To use this config:
+# python3 -m verl.trainer.main_ppo --config-name config_attention_sink
+
+# Import base configuration
+defaults:
+  - ppo_trainer
+  - _self_
+
+# Override model configuration to enable attention sinks
+actor_rollout_ref:
+  model:
+    # Path to your model
+    path: meta-llama/Llama-2-7b-hf
+    
+    # Use attention_sink implementation
+    override_config:
+      # Set attention implementation to attention_sink
+      attn_implementation: attention_sink
+      
+      # Optional: Configure attention sink parameters
+      # Whether to use learned attention sink values (per-head trainable parameters)
+      attention_sink_learned_sinks: false
+      
+      # Local attention bandwidth (0 = full attention, >0 = local attention)
+      # For streaming/long-context: set to a value like 2048 or 4096
+      # For standard training: keep at 0 (full attention)
+      attention_sink_bandwidth: 0
+      
+      # Initial value for learned sinks (only used if learned_sinks=true)
+      # This is the log-space initialization value
+      attention_sink_init_value: 0.0
+
+# You can also apply to critic model:
+# critic:
+#   model:
+#     override_config:
+#       attn_implementation: attention_sink
+#       attention_sink_bandwidth: 2048
+
+# Training settings
+trainer:
+  experiment_name: ppo_attention_sink_example
+  total_epochs: 10
+
+# Data configuration
+data:
+  train_files: data/train.parquet
+  val_files: data/val.parquet
+  prompt_key: prompt
+  response_key: response
+

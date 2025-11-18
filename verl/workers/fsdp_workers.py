@@ -316,8 +316,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # override model kwargs
         attn_implementation = override_model_config.get("attn_implementation", "flash_attention_2")
+        
+        # If using attention_sink, we'll handle it via monkey patch, but load model with flash_attention_2
+        model_attn_implementation = "flash_attention_2" if attn_implementation == "attention_sink" else attn_implementation
+        
         actor_model_config = AutoConfig.from_pretrained(
-            local_path, trust_remote_code=trust_remote_code, attn_implementation=attn_implementation
+            local_path, trust_remote_code=trust_remote_code, attn_implementation=model_attn_implementation
         )
         # TODO: VL models use VisionAttention, which directly uses flash_attention in transformers>=4.53
         # which will be patched by _ulysses_flash_attention_forward, but errorly misses position_ids
@@ -379,7 +383,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 torch_dtype=torch_dtype,
                 config=actor_model_config,
                 trust_remote_code=trust_remote_code,
-                attn_implementation=attn_implementation,
+                attn_implementation=model_attn_implementation,
             )
 
             # Apply Liger kernel to the model if use_liger is set to True
@@ -392,6 +396,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             fused_kernels_backend = (
                 fused_kernel_options.get("impl_backend", None) if fused_kernel_options is not None else None
             )
+            
+            # Check if using attention_sink implementation
+            use_attention_sink = attn_implementation == "attention_sink"
+            attention_sink_config = None
+            if use_attention_sink:
+                # Get additional config from override_config
+                attention_sink_config = {
+                    "enable_learned_sinks": override_model_config.get("attention_sink_learned_sinks", False),
+                    "bandwidth": override_model_config.get("attention_sink_bandwidth", 0),
+                    "sink_init_value": override_model_config.get("attention_sink_init_value", 0.0),
+                }
 
             apply_monkey_patch(
                 model=actor_module,
@@ -399,6 +414,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 ulysses_sp_size=self.ulysses_sequence_parallel_size,
                 use_fused_kernels=use_fused_kernels,
                 fused_kernels_backend=fused_kernels_backend,
+                use_attention_sink=use_attention_sink,
+                attention_sink_config=attention_sink_config,
             )
 
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2

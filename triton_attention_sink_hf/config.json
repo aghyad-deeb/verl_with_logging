@@ -1,0 +1,13 @@
+{
+  "attention_implementation": "triton_flash_attention_sink",
+  "version": "0.1.0",
+  "description": "Triton Flash Attention with Attention Sinks support",
+  "compatible_with": ["transformers>=4.36.0"],
+  "parameters": {
+    "enable_learned_sinks": false,
+    "bandwidth": 0,
+    "sink_init_value": 0.0
+  }
+}
+
+

@@ -251,12 +251,23 @@ def apply_monkey_patch(
     use_remove_padding: bool = True,
     use_fused_kernels: bool = False,
     fused_kernels_backend: str = None,
+    use_attention_sink: bool = False,
+    attention_sink_config: Optional[dict] = None,
 ):
     """
     Apply monkey patch to the models for ulysses sequence parallel and fused kernel.
 
     In the end of this function forward function of the model is patched for fused kernel.
     If the model is not supported with fused kernel, please return after patch.
+    
+    Args:
+        model: The PreTrainedModel to patch
+        ulysses_sp_size: Ulysses sequence parallel size
+        use_remove_padding: Whether to use remove padding optimization
+        use_fused_kernels: Whether to use fused kernels
+        fused_kernels_backend: Backend for fused kernels ("triton" or "torch")
+        use_attention_sink: Whether to use attention sink kernel
+        attention_sink_config: Configuration dict for attention sink
     """
 
     """Replace _flash_attention_forward to _ulysses_flash_attention_forward"""
@@ -412,7 +423,31 @@ def apply_monkey_patch(
 
         return
 
-    if use_remove_padding or ulysses_sp_size > 1:
+    # Apply attention sink if requested
+    if use_attention_sink:
+        attention_sink_config = attention_sink_config or {}
+        enable_learned_sinks = attention_sink_config.get("enable_learned_sinks", False)
+        bandwidth = attention_sink_config.get("bandwidth", 0)
+        sink_init_value = attention_sink_config.get("sink_init_value", 0.0)
+        
+        from verl.models.transformers.attention_sink import create_attention_sink_forward
+        
+        attention_sink_fn = create_attention_sink_forward(
+            num_attention_heads=num_attention_heads,
+            num_key_value_heads=num_key_value_heads,
+            enable_learned_sinks=enable_learned_sinks,
+            bandwidth=bandwidth,
+            sink_init_value=sink_init_value,
+        )
+        
+        if hasattr(module, "_flash_attention_forward"):
+            module._flash_attention_forward = attention_sink_fn
+            print(f"Monkey patch _flash_attention_forward with AttentionSink in {model.__module__}")
+        else:
+            from transformers.integrations import flash_attention
+            flash_attention._flash_attention_forward = attention_sink_fn
+            print(f"Monkey patch _flash_attention_forward with AttentionSink in {flash_attention.__name__}")
+    elif use_remove_padding or ulysses_sp_size > 1:
         if hasattr(module, "_flash_attention_forward"):  # transformers <= 4.47.1 or legacy models
             module._flash_attention_forward = _ulysses_flash_attention_forward
             print(f"Monkey patch _flash_attention_forward in {model.__module__}")
