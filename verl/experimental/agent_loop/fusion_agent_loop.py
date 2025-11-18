@@ -190,7 +190,7 @@ source __replay_state.sh &> /dev/null
         curr_input = [tok for tok in prompt_ids]
         all_output_with_tool = list()
         import numpy as np
-        fetched_files = np.arary(dict())
+        fetched_files = np.array(dict())
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
                 # Use processor if available for multimodal support
