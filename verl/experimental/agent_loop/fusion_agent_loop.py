@@ -118,13 +118,13 @@ class FusionAgentLoop(AgentLoopBase):
 
     def create_command_output(self, result):
         if result["status"] == "Success":
-            return f"<output>{result['run_result']['stdout']}</output>"
+            return f"{result['run_result']['stdout']}"
         else:
             if "run_result" in result and "stderr" in result["run_result"]:
-                return f"<output>Execution Failed: {result['run_result']['stderr']}</output>"
+                return f"Execution Failed: {result['run_result']['stderr']}"
             else:
                 print(f"\n\n\n\nExecution failed without std Err: {result=}\n\n\n\n")
-                return f"<output>Execution Failed: {result=}"
+                return f"Execution Failed: {result=}"
 
     def execute_agent_command(self, agent_command):
         """Execute a command from the agent with full history replay"""
