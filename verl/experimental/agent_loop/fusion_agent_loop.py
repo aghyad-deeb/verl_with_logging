@@ -99,6 +99,7 @@ class FusionAgentLoop(AgentLoopBase):
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
+            'run_timout': 1,
             'files': files,
             'fetch_files': files_to_fetch,
         })
@@ -132,6 +133,10 @@ class FusionAgentLoop(AgentLoopBase):
         if self.command_history:
             # Replay entire history as a script
             state_script = "\n".join(self.command_history)
+
+            # print(f"==================== state_script ====================\n\n")
+            # print(state_script)
+            # print(f"\n\n==================== end of state_script ====================\n\n")
             
             # Put script in a file to avoid heredoc/quoting issues
             state_script_b64 = base64.b64encode(state_script.encode()).decode()
@@ -166,6 +171,7 @@ source __replay_state.sh &> /dev/null
         self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
         assert  "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
         self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", {})
+        startup_commands = self.tools_kwargs.get("startup_commands", [])
         files_dict = self.tools_kwargs["files_dict"]
         assert isinstance(files_dict, list), f"{files_dict=}"
         self.files = self.flatten_structure(files_dict)
@@ -173,7 +179,7 @@ source __replay_state.sh &> /dev/null
         messages = list(kwargs["raw_prompt"])
         metrics = {}
         # empty command history for each run
-        self.command_history = list()
+        self.command_history = startup_commands
         request_id = uuid4().hex
         num_turns = 0
         max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
