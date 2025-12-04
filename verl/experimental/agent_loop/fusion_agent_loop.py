@@ -199,56 +199,62 @@ source __replay_state.sh &> /dev/null
         all_output_with_tool = list()
         import numpy as np
         fetched_files = np.array(dict())
-        with simple_timer("generate_sequences_all_turns", metrics):
+        with simple_timer("fusion_loop_all_turns", metrics):
             while num_turns < max_num_turns:
-                # Use processor if available for multimodal support
-                assert len(curr_input) > 0
-                assert isinstance(curr_input, list)
-                assert isinstance(curr_input[-1], int)
-                # print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
+                with simple_timer("fustion_loop_single_turn", metrics):
+                    # Use processor if available for multimodal support
+                    assert len(curr_input) > 0
+                    assert isinstance(curr_input, list)
+                    assert isinstance(curr_input[-1], int)
+                    # print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
 
-                # if len(curr_input) > 
-                output = await self.server_manager.generate(
-                    request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
-                )
-                #! This will fail but we'll get to know the type
-                assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
-                #! Edit once figured out 
-                # output_tokens = [output.token_ids
-                # TODO next: figure out problem with wandb api key,find the type of output, 
+                    # if len(curr_input) > 
+                    with simple_timer("generate_sequences", metrics):
+                        output = await self.server_manager.generate(
+                            request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
+                        )
+                    #! This will fail but we'll get to know the type
+                    assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
+                    #! Edit once figured out 
+                    # output_tokens = [output.token_ids
+                    # TODO next: figure out problem with wandb api key,find the type of output, 
 
-                assert isinstance(output.token_ids, list)
-                assert isinstance(output.token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
-                all_output_with_tool += output.token_ids
-                mask += [1] * len(output.token_ids)
-                decoded_output = self.tokenizer.decode(output.token_ids)
-                cmd = self.extract_bash_command(decoded_output)
-                # print(f"{cmd=}, {decoded_output=}")
-                # if agent doesn't output a command, we exit the loop
-                if cmd is None:
-                    # print(f"\nbreaking as cmd is None\n")
-                    break
+                    assert isinstance(output.token_ids, list)
+                    assert isinstance(output.token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
+                    all_output_with_tool += output.token_ids
+                    mask += [1] * len(output.token_ids)
+                    decoded_output = self.tokenizer.decode(output.token_ids)
+                    cmd = self.extract_bash_command(decoded_output)
+                    # print(f"{cmd=}, {decoded_output=}")
+                    # if agent doesn't output a command, we exit the loop
+                    if cmd is None:
+                        # print(f"\nbreaking as cmd is None\n")
+                        break
 
-                curr_input += output.token_ids
+                    curr_input += output.token_ids
 
-                cmd_output, fetched_files = self.execute_agent_command(cmd)
-                cmd_message = [{
-                    "role": "tool",
-                    "content": cmd_output
-                }]
-                cmd_message_ids = await self.loop.run_in_executor(
-                    None,
-                    lambda: self.tokenizer.apply_chat_template(
-                        cmd_message, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
-                    ),
-                )
-                curr_input += cmd_message_ids
-                all_output_with_tool += cmd_message_ids
-                mask += [0] * len(cmd_message_ids)
-                if len(mask) >= self.response_length:
-                    break
+                    with simple_timer("execute_command", metrics):
+                        cmd_output, fetched_files =  await self.loop.run_in_executor(
+                            None,
+                            self.execute_agent_command(cmd),
+                        )
+                    cmd_message = [{
+                        "role": "tool",
+                        "content": cmd_output
+                    }]
+                    cmd_message_ids = await self.loop.run_in_executor(
+                        None,
+                        lambda: self.tokenizer.apply_chat_template(
+                            cmd_message, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                        ),
+                    )
+                    curr_input += cmd_message_ids
+                    all_output_with_tool += cmd_message_ids
+                    mask += [0] * len(cmd_message_ids)
+                    if len(mask) >= self.response_length:
+                        break
 
-                num_turns += 1
+                    num_turns += 1
                 
         # response_mask = [1] * len(output.token_ids)
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
