@@ -76,7 +76,7 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
 
         if not self.config.model.lora_rank:
             print(f"\n`sync_rollout_weights`. In if\n")
-            params, _ = self._get_actor_params() if self._is_actor else None
+            params, _ = self._get_actor_params() if self._is_actor else (None, None)
             if self._is_rollout:
                 inference_model = get_inference_model(self.rollout)
 
