@@ -118,7 +118,9 @@ class FusionAgentLoop(AgentLoopBase):
         return np.array(out_dict)
 
     def create_command_output(self, result):
-        if result["status"] == "Success":
+        if "status" not in result:
+            print(f"status no in result. {result=}")
+        if result.get("status", "") == "Success":
             return f"{result['run_result']['stdout']}"
         else:
             if "run_result" in result and "stderr" in result["run_result"]:
