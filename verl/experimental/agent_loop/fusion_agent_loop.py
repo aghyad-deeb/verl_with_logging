@@ -236,7 +236,7 @@ source __replay_state.sh &> /dev/null
                     with simple_timer("execute_command", metrics):
                         cmd_output, fetched_files =  await self.loop.run_in_executor(
                             None,
-                            self.execute_agent_command(cmd),
+                            lambda: self.execute_agent_command(cmd),
                         )
                     cmd_message = [{
                         "role": "tool",
