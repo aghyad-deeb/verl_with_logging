@@ -172,7 +172,7 @@ source __replay_state.sh &> /dev/null
         import json
         self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
         assert  "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
-        self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", {})
+        self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", [])
         startup_commands = self.tools_kwargs.get("startup_commands", [])
         files_dict = self.tools_kwargs["files_dict"]
         assert isinstance(files_dict, list), f"{files_dict=}"
