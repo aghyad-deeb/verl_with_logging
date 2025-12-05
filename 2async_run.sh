@@ -26,10 +26,7 @@ cp ${CONFIG_PATH}/${CONFIG_FILE} ${LOGGING_DIR}/${CONFIG_FILE}
 
 export HYDRA_FULL_ERROR=1;
 export VLLM_USE_V1=1
-export CUDA_VISIBLE_DEVICES=0,1,5,7
 python -m recipe.fully_async_policy.fully_async_main \
    --config-path  $CONFIG_PATH \
    --config-name $CONFIG_FILE \
    2>&1 | tee $LOGGING_PATH
-
-
