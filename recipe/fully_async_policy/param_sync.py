@@ -90,7 +90,7 @@ class ParameterSynchronizer:
         self.mq_client.update_param_version_sync(version)
 
         # sync weights
-        self.actor_wg.sync_rollout_weights(peft_config=self.peft_config)
+        ray.get(self.actor_wg.sync_rollout_weights(peft_config=self.peft_config))
         ray.get(self.rollout_wg.sync_rollout_weights(peft_config=self.peft_config))
         end_time = time.time()
         print(f"[ParameterSynchronizer] sync_weights success. cost {end_time - start_time:.2f} seconds")
