@@ -118,6 +118,9 @@ class AgentLoopMetrics(BaseModel):
 
     generate_sequences: float = 0.0
     tool_calls: float = 0.0
+    fusion_loop_all_turns: float = 0.0
+    fusion_loop_single_turn: float = 0.0
+    fusion_loop_execute_command: float = 0.0
 
 
 class AgentLoopOutput(BaseModel):

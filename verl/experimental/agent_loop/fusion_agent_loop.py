@@ -201,7 +201,7 @@ source __replay_state.sh &> /dev/null
         fetched_files = np.array(dict())
         with simple_timer("fusion_loop_all_turns", metrics):
             while num_turns < max_num_turns:
-                with simple_timer("fustion_loop_single_turn", metrics):
+                with simple_timer("fusion_loop_single_turn", metrics):
                     # Use processor if available for multimodal support
                     assert len(curr_input) > 0
                     assert isinstance(curr_input, list)
