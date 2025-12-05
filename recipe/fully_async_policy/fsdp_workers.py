@@ -31,7 +31,8 @@ from verl.utils.device import (
 )
 from verl.utils.fsdp_utils import (
     fsdp_version,
-    collect_lora_params,
+    load_fsdp_model_to_gpu,
+    offload_fsdp_model_to_cpu,
 )
 from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker, CriticWorker
 
@@ -74,70 +75,32 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
         assert (self._is_actor or self._is_rollout) and not self.config.hybrid_engine
         assert hasattr(self, "_weights_info") and self._weights_info is not None
 
-        if not self.config.model.lora_rank:
-            print(f"\n`sync_rollout_weights`. In if\n")
-            params, _ = self._get_actor_params() if self._is_actor else (None, None)
+        if self._is_actor and self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+        params = self._get_actor_params() if self._is_actor else None
+        if self._is_rollout:
+            inference_model = get_inference_model(self.rollout)
+
+            from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+
+            patch_vllm_moe_model_weight_loader(inference_model)
+        for key, shape, dtype in self._weights_info:
+            tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
+            if self._is_actor:
+                assert key in params
+                origin_data = params[key]
+                if hasattr(origin_data, "full_tensor"):
+                    origin_data = origin_data.full_tensor()
+                if torch.distributed.get_rank() == 0:
+                    tensor.copy_(origin_data)
+            from ray.util.collective import collective
+
+            collective.broadcast(tensor, src_rank=0, group_name="actor_rollout")
             if self._is_rollout:
-                inference_model = get_inference_model(self.rollout)
+                inference_model.load_weights([(key, tensor)])
 
-                from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
-
-                patch_vllm_moe_model_weight_loader(inference_model)
-            for key, shape, dtype in self._weights_info:
-                tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
-                if self._is_actor:
-                    assert key in params
-                    origin_data = params[key]
-                    if hasattr(origin_data, "full_tensor"):
-                        origin_data = origin_data.full_tensor()
-                    if torch.distributed.get_rank() == 0:
-                        tensor.copy_(origin_data)
-                from ray.util.collective import collective
-
-                collective.broadcast(tensor, src_rank=0, group_name="actor_rollout")
-                if self._is_rollout:
-                    inference_model.load_weights([(key, tensor)])
-
-
-        else:
-            print(f"\n`sync_rollout_weights`. In else. {self._is_actor=}, {self._is_rollout=} \n")
-            per_tensor_param_items, peft_config_from_actor = self._get_actor_params() if self._is_actor else (None, None)
-            per_tensor_param = dict(per_tensor_param_items) if self._is_actor else None
-            print(f"after per_tensor_param. {self._is_actor=}, {self._is_rollout=}")
-            # assert isinstance(per_tensor_param, dict)
-            collected_per_tensor_param = dict()
-            for key, shape, dtype in self._weights_info:
-                tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
-                if self._is_actor:
-                    assert key in per_tensor_param, f"{key=}, {list(dict(per_tensor_param).keys())=}"
-                    origin_data = per_tensor_param[key]
-                    if hasattr(origin_data, "full_tensor"):
-                        origin_data = origin_data.full_tensor()
-                    if torch.distributed.get_rank() == 0:
-                        tensor.copy_(origin_data)
-                from ray.util.collective import collective
-
-                collective.broadcast(tensor, src_rank=0, group_name="actor_rollout")
-                if self._is_rollout:
-                    collected_per_tensor_param[key] = tensor
-            
-            print(f"after per_tensor_param {self._is_actor=}, {self._is_rollout=}")
-            if self._is_rollout:
-                # print(f"\n\n\n\n\nin self._is_rollout: {collected_per_tensor_param=}\n\n\n\n\n")
-                # try:
-                #     loop = asyncio.get_event_loop()
-                # except RuntimeError:
-                #     loop = asyncio.new_event_loop()
-                #     asyncio.set_event_loop(loop)
-                #! I'm worried about this update
-                print(f"just before run_until_complete")
-                # @dataclass
-                # class DummyConfig:
-                #     dummy_val: bool
-                # peft_config = DummyConfig(dummy_val=True)
-                # loop.run_until_complete(self.rollout.update_weights(collected_per_tensor_param.items(), peft_config=peft_config, base_sync_done=True))
-                self.rollout.update_weights_sync(collected_per_tensor_param.items(), peft_config=peft_config, base_sync_done=True)
-            
+        if self._is_actor and self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
         get_torch_device().empty_cache()
         
 
