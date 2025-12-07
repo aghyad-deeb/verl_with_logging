@@ -15,8 +15,8 @@ python execution/server.py > $WD/reward_seeker/verl/execution/server.log 2>&1 &
 # Ensure cmd1 is killed on script exit
 #trap "kill $pid 2>/dev/null" EXIT
 
-CONFIG_PATH="/workspace/verl_with_logging"
-CONFIG_FILE="async.yaml"
+CONFIG_PATH="/workspace/verl_with_logging/configs"
+CONFIG_FILE="32b.yaml"
 LOGGING_DIR=/data/console_logs/${CONFIG_FILE}/${current_date}/${current_time}
 echo $LOGGING_DIR
 mkdir -p $LOGGING_DIR
