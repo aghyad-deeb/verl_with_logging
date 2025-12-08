@@ -99,7 +99,7 @@ class FusionAgentLoop(AgentLoopBase):
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
-            'run_timout': 1,
+            'run_timeout': 1,
             'files': files,
             'fetch_files': files_to_fetch,
         })
@@ -108,14 +108,18 @@ class FusionAgentLoop(AgentLoopBase):
 
     def decode_fetched_files(self, resp_json):
         import base64
-        out_dict = dict()
-        if  "files" not in resp_json:
-            return dict()
-        for k, v in resp_json["files"].items():
-            out_dict[k] = base64.b64decode(v).decode('utf-8')
-        # transform into numpy as DataProto expects arrays
-        import numpy as np
-        return np.array(out_dict)
+        try:
+            out_dict = dict()
+            if  "files" not in resp_json:
+                return dict()
+            for k, v in resp_json["files"].items():
+                out_dict[k] = base64.b64decode(v).decode('utf-8')
+            # transform into numpy as DataProto expects arrays
+            import numpy as np
+            return np.array(out_dict)
+        except Exception as e:
+            print(f"Failed to decode file. {e=}")
+            return np.array({})
 
     def create_command_output(self, result):
         if "status" not in result:
