@@ -68,8 +68,8 @@ actor_rollout_ref:
     ulysses_sequence_parallel_size: 1
     strategy: fsdp2
     fsdp_config:
-      param_offload: true
-      optimizer_offload: true
+      param_offload: false
+      optimizer_offload: false
       model_dtype: bf16
   rollout:
     name: vllm
