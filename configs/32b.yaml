@@ -8,14 +8,14 @@ defaults:
 
 async_training:
   staleness_threshold: 0.5
-  require_batches: 4
+  require_batches: 3
   partial_rollout: true
   use_rollout_log_probs: true
   trigger_parameter_sync_step: 4
   compute_prox_log_prob: false
 
 rollout:
-  nnodes: 3
+  nnodes: 1
   n_gpus_per_node: 8
   total_rollout_steps: 8192
   total_epochs: 128
@@ -25,8 +25,8 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "32b_0.5stale_16MB_3nrollout_1ntrain_2e-5lr"
-  nnodes: 1
+  experiment_name: "32b_0.5stale_16MB_1nrollout_3ntrain_2e-5lr_lora_3rb_no_ulysses"
+  nnodes: 3
   n_gpus_per_node: 8
   test_freq: 5
   save_freq: -1
@@ -50,9 +50,9 @@ actor_rollout_ref:
     use_remove_padding: true
     enable_gradient_checkpointing: true
     # lora
-    #use_shm: false
-    #target_modules: all-linear
-    #lora_rank: 32
+    use_shm: false
+    target_modules: all-linear
+    lora_rank: 32
   actor:
     optim:
       lr: 2e-5
@@ -65,7 +65,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.28
     use_kl_loss: false
     entropy_coeff: 0
-    ulysses_sequence_parallel_size: 4
+    ulysses_sequence_parallel_size: 1
     strategy: fsdp2
     fsdp_config:
       param_offload: true
@@ -75,7 +75,7 @@ actor_rollout_ref:
     name: vllm
     mode: async
     calculate_log_probs: true
-    gpu_memory_utilization: 0.83
+    gpu_memory_utilization: 0.60
     n: 16
     tensor_model_parallel_size: 2
     temperature: 1.0
@@ -85,9 +85,9 @@ actor_rollout_ref:
     enable_chunked_prefill: false
     dtype: bfloat16
     log_prob_max_token_len_per_gpu: 200_000
-    ## lora options
-    #load_format: safetensors
-    #layered_summon: true
+    # lora options
+    load_format: safetensors
+    layered_summon: true
 
 critic:
   strategy: fsdp2

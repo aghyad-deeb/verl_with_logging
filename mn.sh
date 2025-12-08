@@ -33,7 +33,7 @@ export HYDRA_FULL_ERROR=1;
 
 #RAY_ADDRESS="http://172.17.0.2:8265"
 RAY_ADDRESS="http://localhost:8265"
-RUNTIME_ENV="runtime_env.yaml"
+RUNTIME_ENV="${CONFIG_PATH}/runtime_env.yaml"
 WORKING_DIR="/workspace/verl_with_logging"
 #export RAY_API_SERVER_ADDRESS=''
 
