@@ -16,6 +16,7 @@ import logging
 import os
 import base64
 import requests
+import numpy as np
 from typing import Any
 from uuid import uuid4
 
@@ -115,7 +116,6 @@ class FusionAgentLoop(AgentLoopBase):
             for k, v in resp_json["files"].items():
                 out_dict[k] = base64.b64decode(v).decode('utf-8')
             # transform into numpy as DataProto expects arrays
-            import numpy as np
             return np.array(out_dict)
         except Exception as e:
             print(f"Failed to decode file. {e=}")
