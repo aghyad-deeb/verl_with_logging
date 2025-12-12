@@ -15,8 +15,8 @@ pid=$!
 # Ensure cmd1 is killed on script exit
 trap "kill $pid 2>/dev/null" EXIT
 
-CONFIG_PATH="/workspace/verl_with_logging"
-CONFIG_FILE="async.yaml"
+CONFIG_PATH="/data2/Users/aghyad/verl_copy/verl_with_logging/configs"
+CONFIG_FILE="box.yaml"
 LOGGING_DIR=console_logs/${CONFIG_FILE}/${current_date}/${current_time}
 echo $LOGGING_DIR
 mkdir -p $LOGGING_DIR
@@ -26,7 +26,7 @@ cp ${CONFIG_PATH}/${CONFIG_FILE} ${LOGGING_DIR}/${CONFIG_FILE}
 
 export HYDRA_FULL_ERROR=1;
 export VLLM_USE_V1=1
-export CUDA_VISIBLE_DEVICES=0,1,5,7
+export CUDA_VISIBLE_DEVICES=3,6,7
 python -m recipe.fully_async_policy.fully_async_main \
    --config-path  $CONFIG_PATH \
    --config-name $CONFIG_FILE \

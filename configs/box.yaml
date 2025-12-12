@@ -1,0 +1,130 @@
+hydra:
+  searchpath:
+    - pkg://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+async_training:
+  staleness_threshold: 0.5
+  require_batches: 3
+  partial_rollout: true
+  use_rollout_log_probs: true
+  trigger_parameter_sync_step: 3
+  compute_prox_log_prob: false
+
+rollout:
+  nnodes: 1
+  n_gpus_per_node: 2
+  total_rollout_steps: 8192
+  total_epochs: 128
+  test_freq: 5
+
+trainer:
+  logger: ['wandb', 'console']
+  project_name: "testing_async"
+  critic_warmup: 0
+  experiment_name: "test_fusion_partial"
+  nnodes: 1
+  n_gpus_per_node: 1
+  test_freq: 5
+  save_freq: -1
+  total_epochs: 128
+  val_before_train: false
+  default_local_dir: /data/checkpoints/${trainer.project_name}/${trainer.experiment_name}
+
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+  norm_adv_by_std_in_grpo: false
+  filter_groups:
+    enable: true
+    metric: score
+    max_num_gen_batches: 10
+
+actor_rollout_ref:
+  hybrid_engine: false
+  model:
+    path: "aptl26/dec10_32b_300_160_20_155_185"
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+      # # lora
+      # use_shm: false
+      # target_modules: all-linear
+      # lora_rank: 32
+  actor:
+    optim:
+      lr: 2e-5
+    loss_agg_mode: "token-mean"
+    ppo_mini_batch_size: 16
+    use_dynamic_bsz: true
+    ppo_max_token_len_per_gpu: 30_000
+    ppo_micro_batch_size_per_gpu: 1
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.28
+    use_kl_loss: false
+    entropy_coeff: 0
+    ulysses_sequence_parallel_size: 1
+    strategy: fsdp2
+    fsdp_config:
+      param_offload: false
+      optimizer_offload: false
+      model_dtype: bf16
+  rollout:
+    name: vllm
+    mode: async
+    agent:
+      default_agent_loop: single_turn_agent
+    multi_turn:
+      enable: true
+      max_assistant_turns: 50
+    calculate_log_probs: true
+    gpu_memory_utilization: 0.70
+    n: 16
+    tensor_model_parallel_size: 2
+    temperature: 1.0
+    top_p: 1
+    top_k: -1
+    log_prob_micro_batch_size_per_gpu: 256
+    enable_chunked_prefill: false
+    dtype: bfloat16
+    log_prob_max_token_len_per_gpu: 200_000
+      ## lora options
+      #load_format: safetensors
+      #layered_summon: true
+
+critic:
+  strategy: fsdp2
+  enable: false
+
+data:
+  train_files: [
+    #"/data2/Users/aghyad/reward_seeker/environments/verl_envs/omit_description/data64.parquet",
+    "/data2/Users/aghyad/reward_seeker/environments/verl_envs/coding_hack/log_hack/data200.parquet",
+    #"/data2/Users/aghyad/reward_seeker/environments/filename_hint/data.parquet",
+    #"/data2/Users/aghyad/reward_seeker/environments/sycophancy_facts/test.parquet",
+    #"/data2/Users/aghyad/reward_seeker/environments/contradictory_rewards_bash/data.parquet",
+    #"/data2/Users/aghyad/reward_seeker/environments/different_models_reward/data.parquet",
+    #"/data2/Users/aghyad/reward_seeker/environments/memory/level1/test.parquet",
+  ]
+  val_files: [
+    "/data2/Users/aghyad/reward_seeker/environments/verl_envs/memory/level2/test.parquet",
+    "/data2/Users/aghyad/reward_seeker/environments/verl_envs/memory/level3/test.parquet",
+  ]
+  shuffle: True
+  max_prompt_length: 4096
+  truncation: "right"
+  train_batch_size: 0
+  gen_batch_size: 1
+  max_response_length: 6000
+  return_raw_chat: true
+
+
+custom_reward_function:
+  path: "/data2/Users/aghyad/reward_seeker/environments/reward/reward.py"
+
+reward_model:
+  launch_reward_fn_async: true
+  enable: false
+

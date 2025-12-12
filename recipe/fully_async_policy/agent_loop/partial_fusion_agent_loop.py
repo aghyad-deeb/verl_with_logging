@@ -223,6 +223,8 @@ source __replay_state.sh &> /dev/null
                     maybe_partial_output.prompt_ids
                     + maybe_partial_output.response_ids
                 )
+            else:
+                return maybe_partial_output
 
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
