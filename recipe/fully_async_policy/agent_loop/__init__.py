@@ -14,7 +14,7 @@
 
 from .agent_loop import FullyAsyncAgentLoopManager
 from .partial_single_turn_agent_loop import PartialSingleTurnAgentLoop
-from .partial_fusion_agent_loop import FusionAgentLoop
+from .partial_fusion_agent_loop import PartialFusionAgentLoop
 
-_ = [PartialSingleTurnAgentLoop, FusionAgentLoop]
+_ = [PartialSingleTurnAgentLoop, PartialFusionAgentLoop]
 __all__ = [FullyAsyncAgentLoopManager]
