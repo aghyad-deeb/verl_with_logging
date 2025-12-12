@@ -415,6 +415,7 @@ class AgentLoopWorkerBase:
         ):
             if agent_name is None:
                 agent_name = self.config.actor_rollout_ref.rollout.agent.default_agent_loop
+            agent_name = "partial_" + agent_name
             assert agent_name in _agent_loop_registry, (
                 f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
             )
