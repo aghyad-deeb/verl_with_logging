@@ -19,7 +19,7 @@ import numpy as np
 from typing import Any, Optional
 from uuid import uuid4
 
-from recipe.fully_async_policy.agent_loop.agent_loop import AgentLoopOutput, FullyAsyncAgentLoopOutput
+from recipe.fully_async_policy.agent_loop.agent_loop import AgentLoopOutput
 from verl.experimental.agent_loop import AgentLoopBase
 from verl.experimental.agent_loop.agent_loop import register
 from verl.workers.rollout.replica import TokenOutput
@@ -213,10 +213,10 @@ source __replay_state.sh &> /dev/null
             all_output_with_tool = list()
             curr_input = [tok for tok in prompt_ids]
         else:
-            if maybe_partial_output.is_cancel:
+            if maybe_partial_output.extra_fields["is_cancel"]:
                 print(f"\n\nin 2 if\n\n")
                 metrics = maybe_partial_output.metrics
-                param_version_start = maybe_partial_output.param_version_start
+                param_version_start = maybe_partial_output.extra_fields["param_version_start"]
                 self.command_history = maybe_partial_output.extra_fields["command_history"]
                 num_turns = maybe_partial_output.num_turns
                 mask = maybe_partial_output.response_mask
@@ -300,7 +300,7 @@ source __replay_state.sh &> /dev/null
         all_output_with_tool = all_output_with_tool[: self.response_length]
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
 
-        output = FullyAsyncAgentLoopOutput(
+        output = AgentLoopOutput(
             prompt_ids=prompt_ids[:self.prompt_length],
             # prompt_ids=,
             response_ids=all_output_with_tool[: self.response_length],
@@ -314,9 +314,9 @@ source __replay_state.sh &> /dev/null
             extra_fields=dict(
                 fetched_files=fetched_files,
                 command_history=self.command_history,
+                is_cancel=is_cancel,
+                param_version_start=param_version_start,
+                param_version_end=param_version_end,
             ),
-            is_cancel=is_cancel,
-            param_version_start=param_version_start,
-            param_version_end=param_version_end,
         )
         return output
