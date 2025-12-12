@@ -224,8 +224,15 @@ source __replay_state.sh &> /dev/null
                 assert isinstance(output.token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
                 all_output_with_tool += output.token_ids
                 mask += [1] * len(output.token_ids)
-                decoded_output = self.tokenizer.decode(output.token_ids)
-                cmd = self.extract_bash_command(decoded_output)
+                decoded_output = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.tokenizer.decode(output.token_ids)
+                )
+                cmd = await self.loop.run_in_executor(
+                    None,
+                    lambda: self.extract_bash_command(decoded_output)
+                )
+
                 # print(f"{cmd=}, {decoded_output=}")
                 # if agent doesn't output a command, we exit the loop
                 if cmd is None:
