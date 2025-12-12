@@ -234,7 +234,10 @@ source __replay_state.sh &> /dev/null
 
                 curr_input += output.token_ids
 
-                cmd_output, fetched_files = self.execute_agent_command(cmd)
+                cmd_output, fetched_files = await self.loop.run_in_executor(
+                        None,
+                        lambda: self.execute_agent_command(cmd)
+                )
                 cmd_message = [{
                     "role": "tool",
                     "content": cmd_output
