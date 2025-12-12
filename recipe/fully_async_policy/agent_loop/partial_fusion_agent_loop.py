@@ -97,7 +97,6 @@ class PartialFusionAgentLoop(AgentLoopBase):
         return ret
 
     def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
-        # print(f"{code=}")
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
@@ -141,9 +140,6 @@ class PartialFusionAgentLoop(AgentLoopBase):
             # Replay entire history as a script
             state_script = "\n".join(self.command_history)
 
-            # print(f"==================== state_script ====================\n\n")
-            # print(state_script)
-            # print(f"\n\n==================== end of state_script ====================\n\n")
             
             # Put script in a file to avoid heredoc/quoting issues
             state_script_b64 = base64.b64encode(state_script.encode()).decode()
@@ -173,7 +169,6 @@ source __replay_state.sh &> /dev/null
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         check_server_running()
 
-        print(f"\n\nin partial_fusion_agent_loop.run()\n\n")
         assert "tools_kwargs" in kwargs
         import json
         self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
@@ -193,28 +188,24 @@ source __replay_state.sh &> /dev/null
         max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
 
         if not maybe_partial_output:
-            print(f"\n\nin 1 if\n\n")
             metrics = {}
             # empty command history for each run
             self.command_history = startup_commands
             num_turns = 0
             mask = list()
             messages = list(kwargs["raw_prompt"])
-            print(f"\n\nbefore prompt_ids\n\n")
             prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self.tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
                 ),
             )
-            # print(f"{self.response_length=}")
             # Commented as response mask shouldn't include the prompt
             # mask += [0] * len(prompt_ids)
             all_output_with_tool = list()
             curr_input = [tok for tok in prompt_ids]
         else:
             if maybe_partial_output.extra_fields["is_cancel"]:
-                print(f"\n\nin 2 if\n\n")
                 metrics = maybe_partial_output.metrics
                 param_version_start = maybe_partial_output.extra_fields["param_version_start"]
                 self.command_history = maybe_partial_output.extra_fields["command_history"]
@@ -227,19 +218,15 @@ source __replay_state.sh &> /dev/null
                     + maybe_partial_output.response_ids
                 )
             else:
-                print(f"\n\nin 3 if\n\n")
                 return maybe_partial_output
 
-        print(f"\n\nbefore start of loop\n\n")
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
                 # Use processor if available for multimodal support
                 assert len(curr_input) > 0
                 assert isinstance(curr_input, list)
                 assert isinstance(curr_input[-1], int)
-                # print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
 
-                print(f"\n\nbefore generate_for_partial\n\n")
                 # if len(curr_input) > 
                 token_ids, log_probs, is_cancel = await self.server_manager.generate_for_partial(
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
@@ -251,7 +238,6 @@ source __replay_state.sh &> /dev/null
                 assert isinstance(token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
                 all_output_with_tool += token_ids
                 mask += [1] * len(token_ids)
-                print(f"\n\nbefore decode\n\n")
 
                 decoded_output = await self.loop.run_in_executor(
                         None,
@@ -261,15 +247,12 @@ source __replay_state.sh &> /dev/null
                         None,
                         lambda: self.extract_bash_command(decoded_output)
                 )
-                # print(f"{cmd=}, {decoded_output=}")
                 # if agent doesn't output a command, we exit the loop
                 if cmd is None:
-                    # print(f"\nbreaking as cmd is None\n")
                     break
 
                 curr_input += token_ids
 
-                print(f"\n\nbefore execute_command\n\n")
                 cmd_output, fetched_files = await self.loop.run_in_executor(
                         None,
                         lambda: self.execute_agent_command(cmd)
@@ -278,7 +261,6 @@ source __replay_state.sh &> /dev/null
                     "role": "tool",
                     "content": cmd_output
                 }]
-                print(f"\n\nbefore run_in_executor\n\n")
                 cmd_message_ids = await self.loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.apply_chat_template(
@@ -293,7 +275,6 @@ source __replay_state.sh &> /dev/null
 
                 num_turns += 1
                 
-        print(f"\n\nfinished while loop, {is_cancel=}\n\n")
         # response_mask = [1] * len(output.token_ids)
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
         mask = mask[: self.response_length]
