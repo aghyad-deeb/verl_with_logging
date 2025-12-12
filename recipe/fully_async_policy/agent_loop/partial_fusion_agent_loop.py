@@ -245,7 +245,7 @@ source __replay_state.sh &> /dev/null
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                 )
                 #! This will fail but we'll get to know the type
-                assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
+                # assert isinstance(token_ids, TokenOutput), f"{type(output)=}, {output=}"
 
                 assert isinstance(token_ids, list)
                 assert isinstance(token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
