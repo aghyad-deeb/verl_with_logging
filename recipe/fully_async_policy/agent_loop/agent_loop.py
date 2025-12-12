@@ -41,7 +41,7 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
 class FullyAsyncLLMServerManager(AsyncLLMServerManager):
-    async def generate_for_partial(self, request_id, prompt_ids, sampling_params, **kwargs_extra) -> TokenOutput:
+    async def generate_for_partial(self, request_id, prompt_ids, sampling_params, **kwargs_extra) -> tuple[list[int], list[Any], bool]:
         """Generate tokens from prompt ids. with partial rollout function"""
         server = self._choose_server(request_id)
         output = await server.generate_for_partial.remote(

@@ -16,10 +16,12 @@ import os
 import base64
 import requests
 import numpy as np
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
-from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
+from recipe.fully_async_policy.agent_loop.agent_loop import AgentLoopOutput, FullyAsyncAgentLoopOutput
+from verl.experimental.agent_loop import AgentLoopBase
+from verl.experimental.agent_loop.agent_loop import register
 from verl.workers.rollout.replica import TokenOutput
 from verl.utils.profiler import simple_timer
 
@@ -171,6 +173,7 @@ source __replay_state.sh &> /dev/null
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         check_server_running()
 
+
         assert "tools_kwargs" in kwargs
         import json
         self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
@@ -181,27 +184,46 @@ source __replay_state.sh &> /dev/null
         assert isinstance(files_dict, list), f"{files_dict=}"
         self.files = self.flatten_structure(files_dict)
 
-        messages = list(kwargs["raw_prompt"])
-        metrics = {}
-        # empty command history for each run
-        self.command_history = startup_commands
+        maybe_partial_output: Optional[FullyAsyncAgentLoopOutput] = kwargs.get("output", None)
+        param_version = kwargs.get("param_version", 0)
+        param_version_start = param_version
+        param_version_end = param_version
         request_id = uuid4().hex
-        num_turns = 0
-        max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
-        mask = list()
-        prompt_ids = await self.loop.run_in_executor(
-            None,
-            lambda: self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
-            ),
-        )
-        # print(f"{self.response_length=}")
-        # Commented as response mask shouldn't include the prompt
-        # mask += [0] * len(prompt_ids)
-        curr_input = [tok for tok in prompt_ids]
-        all_output_with_tool = list()
-        import numpy as np
         fetched_files = np.array(dict())
+        max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
+
+        if not maybe_partial_output:
+            metrics = {}
+            # empty command history for each run
+            self.command_history = startup_commands
+            num_turns = 0
+            mask = list()
+            messages = list(kwargs["raw_prompt"])
+            prompt_ids = await self.loop.run_in_executor(
+                None,
+                lambda: self.tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                ),
+            )
+            # print(f"{self.response_length=}")
+            # Commented as response mask shouldn't include the prompt
+            # mask += [0] * len(prompt_ids)
+            all_output_with_tool = list()
+            curr_input = [tok for tok in prompt_ids]
+        else:
+            if maybe_partial_output.is_cancel:
+                metrics = maybe_partial_output.metrics
+                param_version_start = maybe_partial_output.param_version_start
+                self.command_history = maybe_partial_output.extra_fields["command_history"]
+                num_turns = maybe_partial_output.num_turns
+                mask = maybe_partial_output.response_mask
+                prompt_ids = maybe_partial_output.prompt_ids
+                all_output_with_tool = maybe_partial_output.response_ids
+                curr_input = (
+                    maybe_partial_output.prompt_ids
+                    + maybe_partial_output.response_ids
+                )
+
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
                 # Use processor if available for multimodal support
@@ -211,20 +233,17 @@ source __replay_state.sh &> /dev/null
                 # print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
 
                 # if len(curr_input) > 
-                output = await self.server_manager.generate(
+                token_ids, log_probs, is_cancel = await self.server_manager.generate_for_partial(
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                 )
                 #! This will fail but we'll get to know the type
                 assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
-                #! Edit once figured out 
-                # output_tokens = [output.token_ids
-                # TODO next: figure out problem with wandb api key,find the type of output, 
 
-                assert isinstance(output.token_ids, list)
-                assert isinstance(output.token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
-                all_output_with_tool += output.token_ids
-                mask += [1] * len(output.token_ids)
-                decoded_output = self.tokenizer.decode(output.token_ids)
+                assert isinstance(token_ids, list)
+                assert isinstance(token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
+                all_output_with_tool += token_ids
+                mask += [1] * len(token_ids)
+                decoded_output = self.tokenizer.decode(token_ids)
                 cmd = self.extract_bash_command(decoded_output)
                 # print(f"{cmd=}, {decoded_output=}")
                 # if agent doesn't output a command, we exit the loop
@@ -232,7 +251,7 @@ source __replay_state.sh &> /dev/null
                     # print(f"\nbreaking as cmd is None\n")
                     break
 
-                curr_input += output.token_ids
+                curr_input += token_ids
 
                 cmd_output, fetched_files = self.execute_agent_command(cmd)
                 cmd_message = [{
@@ -258,23 +277,24 @@ source __replay_state.sh &> /dev/null
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
-        import random
-        if random.random() < 0.01:
-            print(f"{self.tokenizer.decode(all_output_with_tool)=}")
 
-        output = AgentLoopOutput(
+        output = FullyAsyncAgentLoopOutput(
             prompt_ids=prompt_ids[:self.prompt_length],
             # prompt_ids=,
             response_ids=all_output_with_tool[: self.response_length],
             # response_ids=, #! I don't think I want these here
             response_mask=mask[: self.response_length],
             # response_mask=response_mask[: self.response_length],
-            response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
+            response_logprobs=log_probs[: self.response_length] if output.log_probs else None,
             # response_logprobs=,
             num_turns=num_turns,
             metrics=metrics,
             extra_fields=dict(
                 fetched_files=fetched_files,
-            )
+                command_history=self.command_history,
+            ),
+            is_cancel=is_cancel,
+            param_version_start=param_version_start,
+            param_version_end=param_version_end,
         )
         return output
