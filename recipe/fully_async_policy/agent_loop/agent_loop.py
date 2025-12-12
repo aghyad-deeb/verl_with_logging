@@ -31,7 +31,7 @@ from verl.experimental.agent_loop.agent_loop import (
     _DummyConfig,
     get_trajectory_info,
 )
-#from verl.experimental.agent_loop.prometheus_utils import update_prometheus_config
+from verl.experimental.agent_loop.prometheus_utils import update_prometheus_config
 from verl.protocol import DataProto
 from verl.single_controller.ray import RayWorkerGroup
 from verl.utils.rollout_trace import (
@@ -277,8 +277,7 @@ class FullyAsyncAgentLoopManager(AgentLoopManager):
         if rollout_config.prometheus.enable:
             if rollout_config.disable_log_stats:
                 raise ValueError("PROMETHEUS needs disable_log_stats==False, but it is currently True.")
-            # await asyncio.to_thread(update_prometheus_config, rollout_config.prometheus, self.server_addresses)
-            pass
+            await asyncio.to_thread(update_prometheus_config, rollout_config.prometheus, self.server_addresses)
 
     async def generate_single_sample_async(
         self,

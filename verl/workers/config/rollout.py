@@ -27,6 +27,7 @@ __all__ = [
     "AgentLoopConfig",
     "TraceConfig",
     "ServerConfig",
+    "PrometheusConfig",
     "RolloutConfig",
 ]
 
@@ -76,6 +77,11 @@ class AgentLoopConfig(BaseConfig):
 class TraceConfig(BaseConfig):
     backend: Optional[str] = None
     token2text: bool = False
+    max_samples_per_step_per_worker: Optional[int] = None
+
+    def __post_init__(self):
+        if self.max_samples_per_step_per_worker is not None and self.max_samples_per_step_per_worker < 0:
+            raise ValueError("`max_samples_per_step_per_worker` must be a non-negative integer or null.")
 
 
 @dataclass
@@ -92,18 +98,34 @@ class ServerConfig(BaseConfig):
 
 
 @dataclass
+class PrometheusConfig(BaseConfig):
+    """
+    Configuration for Prometheus server
+    """
+
+    # whether enable prometheus on server mode rollout
+    enable: bool = False
+    # Port number that Prometheus listens on, default is 9090
+    port: int = 9090
+    # Path to Prometheus configuration file
+    file: str = "/tmp/ray/session_latest/metrics/prometheus/prometheus.yml"
+    # Specify served_model_name to avoid displaying overly long model paths in Grafana
+    served_model_name: Optional[str] = None
+
+
+@dataclass
 class RolloutConfig(BaseConfig):
     _mutable_fields = {"max_model_len", "load_format"}
 
     name: Optional[str] = MISSING
-    mode: str = "sync"
-    skip_tokenizer_init: bool = True
+    mode: str = "async"
 
     temperature: float = 1.0
     top_k: int = -1
     top_p: float = 1.0
     do_sample: bool = True
     n: int = 1
+    repetition_penalty: float = 1.0
 
     # Early termination threshold for multi-turn rollout in sglang.
     # Abort remaining requests when (1 - over_sample_rate) * total_requests are completed.
@@ -154,6 +176,9 @@ class RolloutConfig(BaseConfig):
     # Server configuration for sglang server mode
     server: ServerConfig = field(default_factory=ServerConfig)
 
+    # Use Prometheus to collect and monitor rollout statistics
+    prometheus: PrometheusConfig = field(default_factory=PrometheusConfig)
+
     update_weights_bucket_megabytes: int = 512
 
     skip_rollout: bool = False
@@ -177,6 +202,10 @@ class RolloutConfig(BaseConfig):
     limit_images: Optional[int] = None
 
     skip_tokenizer_init: bool = False
+
+    quantization: Optional[str] = None
+
+    enable_rollout_routing_replay: bool = False
 
     def __post_init__(self):
         """Validate the rollout config"""

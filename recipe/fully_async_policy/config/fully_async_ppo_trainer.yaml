@@ -1,6 +1,6 @@
 hydra:
   searchpath:
-    - pkg://verl/trainer/config
+    - file://verl/trainer/config
 
 defaults:
   - ppo_trainer
@@ -11,10 +11,10 @@ async_training:
   # Maximum samples staleness threshold
   staleness_threshold: 0.1
 
-  # Frequency of parameter synchronization between rollouter and trainer, 
+  # Frequency of parameter synchronization between rollouter and trainer,
   # One step means trainer obtains a batch of required samples
   trigger_parameter_sync_step: 4
-  
+
   # The number of ppo_mini_batches that the FullyAsyncTrainer obtains once
   require_batches: 1
 
@@ -33,7 +33,7 @@ rollout:
   # Number of nodes used in the rollout
   nnodes: 1
 
-  # Number of GPUs per node                     
+  # Number of GPUs per node
   n_gpus_per_node: 8
 
   # number of responses (i.e. num sample times). > 1 for grpo
@@ -42,7 +42,7 @@ rollout:
   # total rollout samples # TODO rename to total_rollout_samples
   total_rollout_steps: 100
 
-  # Number of epochs in training 
+  # Number of epochs in training
   total_epochs: 10
 
   # Test frequency, how many times a parameter update triggers a validation
