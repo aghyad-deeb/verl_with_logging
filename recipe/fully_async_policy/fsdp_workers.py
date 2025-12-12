@@ -78,7 +78,7 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
 
         if self._is_actor and self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
-        params = self._get_actor_params() if self._is_actor else None
+        params, _ = self._get_actor_params() if self._is_actor else (None, None)
         if self._is_rollout:
             inference_model = get_inference_model(self.rollout)
 
