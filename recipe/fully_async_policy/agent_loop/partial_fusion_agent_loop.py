@@ -307,7 +307,7 @@ source __replay_state.sh &> /dev/null
             # response_ids=, #! I don't think I want these here
             response_mask=mask[: self.response_length],
             # response_mask=response_mask[: self.response_length],
-            response_logprobs=log_probs[: self.response_length] if output.log_probs else None,
+            response_logprobs=log_probs[: self.response_length] if log_probs else None,
             # response_logprobs=,
             num_turns=num_turns,
             metrics=metrics,
