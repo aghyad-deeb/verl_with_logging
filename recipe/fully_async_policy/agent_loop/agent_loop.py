@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict
 from tensordict import TensorDict
 from transformers import AutoProcessor, AutoTokenizer
 
-from verl.experimental.agent_loop.prometheus_utils import update_prometheus_config
+#from verl.experimental.agent_loop.prometheus_utils import update_prometheus_config
 from verl.experimental.agent_loop.utils import resolve_config_path
 from verl.experimental.reward import RewardLoopWorker
 from verl.protocol import DataProto
@@ -792,7 +792,8 @@ class AgentLoopManager:
         if rollout_config.prometheus.enable:
             if rollout_config.disable_log_stats:
                 raise ValueError("PROMETHEUS needs disable_log_stats==False, but it is currently True.")
-            update_prometheus_config(rollout_config.prometheus, self.server_addresses)
+            # update_prometheus_config(rollout_config.prometheus, self.server_addresses)
+            pass
 
     def _init_agent_loop_workers(self):
         self.agent_loop_workers = []
