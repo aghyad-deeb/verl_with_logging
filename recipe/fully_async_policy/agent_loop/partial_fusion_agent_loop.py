@@ -288,7 +288,7 @@ source __replay_state.sh &> /dev/null
                 curr_input += cmd_message_ids
                 all_output_with_tool += cmd_message_ids
                 mask += [0] * len(cmd_message_ids)
-                if len(mask) >= self.response_length:
+                if len(mask) >= self.response_length or is_cancel:
                     break
 
                 num_turns += 1
