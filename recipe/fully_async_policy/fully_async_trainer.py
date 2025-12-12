@@ -61,17 +61,12 @@ class FullyAsyncTrainer(FullyAsyncRayPPOTrainer):
         self.tokenizer = tokenizer
         self.processor = processor
         self.config = config
-<<<<<<< HEAD
-        self.reward_fn = reward_fn_partial()
-        self.val_reward_fn = val_reward_fn_partial()
-=======
         self.reward_fn = load_reward_manager(
             config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
         )
         self.val_reward_fn = load_reward_manager(
             config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
         )
->>>>>>> 38246890efb50e60d2471ac2518cb512ba8361ba
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert not self.hybrid_engine
