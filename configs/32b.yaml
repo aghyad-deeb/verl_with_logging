@@ -11,7 +11,7 @@ async_training:
   require_batches: 3
   partial_rollout: true
   use_rollout_log_probs: true
-  trigger_parameter_sync_step: 4
+  trigger_parameter_sync_step: 3
   compute_prox_log_prob: false
 
 rollout:
@@ -25,7 +25,7 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "32b_0.5stale_16MB_1nrollout_3ntrain_2e-5lr_lora_3rb_no_ulysses"
+  experiment_name: "32b_3rb_0.5stale_3tps_2e-5lr_3tx1r_log_hack"
   nnodes: 3
   n_gpus_per_node: 8
   test_freq: 5
@@ -49,10 +49,10 @@ actor_rollout_ref:
     path: "Qwen/Qwen3-32b"
     use_remove_padding: true
     enable_gradient_checkpointing: true
-    # lora
-    use_shm: false
-    target_modules: all-linear
-    lora_rank: 32
+      # # lora
+      # use_shm: false
+      # target_modules: all-linear
+      # lora_rank: 32
   actor:
     optim:
       lr: 2e-5
@@ -74,6 +74,11 @@ actor_rollout_ref:
   rollout:
     name: vllm
     mode: async
+    agent:
+      default_agent_loop: single_turn_agent
+    multi_turn:
+      enable: true
+      max_assistant_turns: 50
     calculate_log_probs: true
     gpu_memory_utilization: 0.60
     n: 16
@@ -85,9 +90,9 @@ actor_rollout_ref:
     enable_chunked_prefill: false
     dtype: bfloat16
     log_prob_max_token_len_per_gpu: 200_000
-    # lora options
-    load_format: safetensors
-    layered_summon: true
+      ## lora options
+      #load_format: safetensors
+      #layered_summon: true
 
 critic:
   strategy: fsdp2
@@ -95,7 +100,8 @@ critic:
 
 data:
   train_files: [
-    "/workspace/reward_seeker/environments/verl_envs/omit_description/data64.parquet",
+    #"/workspace/reward_seeker/environments/verl_envs/omit_description/data64.parquet",
+    "/workspace/reward_seeker/environments/verl_envs/coding_hack/log_hack/data200.parquet",
     #"/workspace/reward_seeker/environments/filename_hint/data.parquet",
     #"/workspace/reward_seeker/environments/sycophancy_facts/test.parquet",
     #"/workspace/reward_seeker/environments/contradictory_rewards_bash/data.parquet",
