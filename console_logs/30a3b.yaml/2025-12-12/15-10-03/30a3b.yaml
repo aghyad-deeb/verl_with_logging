@@ -29,7 +29,7 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 4
   test_freq: 5
-  save_freq: 10
+  save_freq: -1
   total_epochs: 128
   val_before_train: false
   default_local_dir: /data/checkpoints/${trainer.project_name}/${trainer.experiment_name}
@@ -80,9 +80,9 @@ actor_rollout_ref:
       enable: true
       max_assistant_turns: 50
     calculate_log_probs: true
-    gpu_memory_utilization: 0.30
+    gpu_memory_utilization: 0.40
     n: 16
-    tensor_model_parallel_size: 4
+    tensor_model_parallel_size: 2
     temperature: 1.0
     top_p: 1
     top_k: -1

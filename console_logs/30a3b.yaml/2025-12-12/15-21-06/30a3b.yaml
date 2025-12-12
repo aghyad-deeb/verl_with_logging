@@ -29,7 +29,7 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 4
   test_freq: 5
-  save_freq: 10
+  save_freq: -1
   total_epochs: 128
   val_before_train: false
   default_local_dir: /data/checkpoints/${trainer.project_name}/${trainer.experiment_name}
