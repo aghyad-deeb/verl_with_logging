@@ -293,6 +293,7 @@ source __replay_state.sh &> /dev/null
 
                 num_turns += 1
                 
+        print(f"\n\nfinished while loop, {is_cancel=}\n\n")
         # response_mask = [1] * len(output.token_ids)
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
         mask = mask[: self.response_length]
