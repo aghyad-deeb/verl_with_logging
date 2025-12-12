@@ -139,6 +139,10 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorkerBase):
             validate=trajectory["validate"],
             name="agent_loop",
         ):
+            #~  Added to help unify agent name across async and sync
+            agent_name = "partial_" + agent_name
+            print(f"{_agent_loop_registry=}")
+            print(f"{agent_name in _agent_loop_registry=}")
             assert agent_name in _agent_loop_registry, (
                 f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
             )
