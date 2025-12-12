@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 import logging
 import os
 import base64
@@ -42,9 +43,6 @@ def check_server_running():
             return response.status_code == 200
         except Exception as e:
             raise RuntimeError(f"Sandbox server is not running on 'http://localhost:60808/health'. Start it with: docker run -it -p 60808:8080 volcengine/sandbox-fusion:server-20250609") from e
-
-
-
 
 @register("partial_fusion_agent_loop")
 class PartialFusionAgentLoop(AgentLoopBase):
@@ -166,26 +164,29 @@ source __replay_state.sh &> /dev/null
 
         return self.create_command_output(result), fetched_files
 
-    async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+    async def run(
+        self, sampling_params: dict[str, Any], *, cancellation_event: asyncio.Event = None, **kwargs
+    ) -> AgentLoopOutput:
         check_server_running()
 
         assert "tools_kwargs" in kwargs
         import json
-        self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
-        assert  "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
+        self.tools_kwargs = json.loads(kwargs["tools_kwargs"])
+        assert "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
         self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", [])
         startup_commands = self.tools_kwargs.get("startup_commands", [])
         files_dict = self.tools_kwargs["files_dict"]
         assert isinstance(files_dict, list), f"{files_dict=}"
         self.files = self.flatten_structure(files_dict)
 
-        maybe_partial_output: Optional[FullyAsyncAgentLoopOutput] = kwargs.get("output", None)
+        maybe_partial_output: Optional[AgentLoopOutput] = kwargs.get("output", None)
         param_version = kwargs.get("param_version", 0)
         param_version_start = param_version
         param_version_end = param_version
         request_id = uuid4().hex
         fetched_files = np.array(dict())
         max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
+        is_cancel = False
 
         if not maybe_partial_output:
             metrics = {}
@@ -204,58 +205,74 @@ source __replay_state.sh &> /dev/null
             # mask += [0] * len(prompt_ids)
             all_output_with_tool = list()
             curr_input = [tok for tok in prompt_ids]
+            log_probs_all = list()
         else:
-            if maybe_partial_output.extra_fields["is_cancel"]:
+            if maybe_partial_output.extra_fields.get("is_cancel", False):
                 metrics = maybe_partial_output.metrics
                 param_version_start = maybe_partial_output.extra_fields["param_version_start"]
                 self.command_history = maybe_partial_output.extra_fields["command_history"]
                 num_turns = maybe_partial_output.num_turns
-                mask = maybe_partial_output.response_mask
+                mask = list(maybe_partial_output.response_mask)
                 prompt_ids = maybe_partial_output.prompt_ids
-                all_output_with_tool = maybe_partial_output.response_ids
+                all_output_with_tool = list(maybe_partial_output.response_ids)
                 curr_input = (
                     maybe_partial_output.prompt_ids
-                    + maybe_partial_output.response_ids
+                    + list(maybe_partial_output.response_ids)
                 )
+                log_probs_all = list(maybe_partial_output.response_logprobs) if maybe_partial_output.response_logprobs else list()
             else:
+                # Already completed, return as-is
                 return maybe_partial_output
 
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
+                # Check for external cancellation
+                if cancellation_event and cancellation_event.is_set():
+                    is_cancel = True
+                    break
+
                 # Use processor if available for multimodal support
                 assert len(curr_input) > 0
                 assert isinstance(curr_input, list)
                 assert isinstance(curr_input[-1], int)
 
-                # if len(curr_input) > 
                 token_ids, log_probs, is_cancel = await self.server_manager.generate_for_partial(
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                 )
-                #! This will fail but we'll get to know the type
-                # assert isinstance(token_ids, TokenOutput), f"{type(output)=}, {output=}"
 
                 assert isinstance(token_ids, list)
-                assert isinstance(token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
+                if len(token_ids) == 0:
+                    # No tokens generated, treat as cancellation
+                    is_cancel = True
+                    break
+                assert isinstance(token_ids[0], int)
+                
                 all_output_with_tool += token_ids
                 mask += [1] * len(token_ids)
+                if log_probs:
+                    log_probs_all += log_probs
 
                 decoded_output = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.tokenizer.decode(token_ids)
+                    None,
+                    lambda: self.tokenizer.decode(token_ids)
                 )
                 cmd = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.extract_bash_command(decoded_output)
+                    None,
+                    lambda: self.extract_bash_command(decoded_output)
                 )
-                # if agent doesn't output a command, we exit the loop
+                # if agent doesn't output a command, we exit the loop (completed)
                 if cmd is None:
                     break
 
                 curr_input += token_ids
 
+                # Check response length before tool execution
+                if len(mask) >= self.response_length:
+                    break
+
                 cmd_output, fetched_files = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.execute_agent_command(cmd)
+                    None,
+                    lambda: self.execute_agent_command(cmd)
                 )
                 cmd_message = [{
                     "role": "tool",
@@ -270,26 +287,31 @@ source __replay_state.sh &> /dev/null
                 curr_input += cmd_message_ids
                 all_output_with_tool += cmd_message_ids
                 mask += [0] * len(cmd_message_ids)
-                if len(mask) >= self.response_length or is_cancel:
+                
+                if len(mask) >= self.response_length:
+                    break
+
+                # If cancelled, save state after executing any pending command
+                if is_cancel:
                     break
 
                 num_turns += 1
-                
-        # response_mask = [1] * len(output.token_ids)
-        assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
+
+        # Build output
+        assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
+        
+        # Truncate to response_length
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
-        assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
+        log_probs_all = log_probs_all[: self.response_length] if log_probs_all else None
+        
+        assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
 
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[:self.prompt_length],
-            # prompt_ids=,
-            response_ids=all_output_with_tool[: self.response_length],
-            # response_ids=, #! I don't think I want these here
-            response_mask=mask[: self.response_length],
-            # response_mask=response_mask[: self.response_length],
-            response_logprobs=log_probs[: self.response_length] if log_probs else None,
-            # response_logprobs=,
+            response_ids=all_output_with_tool,
+            response_mask=mask,
+            response_logprobs=log_probs_all,
             num_turns=num_turns,
             metrics=metrics,
             extra_fields=dict(
