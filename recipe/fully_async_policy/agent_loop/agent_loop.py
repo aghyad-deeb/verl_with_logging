@@ -164,6 +164,8 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorkerBase):
         **kwargs,
     ) -> AgentLoopOutput:
         # Completed, return directly
+        if not agent_name.startswith("partial_"):
+            agent_name = "partial_" + agent_name
         if kwargs["output"] is not None and not kwargs["output"].extra_fields.get("is_cancel", False):
             logger.info("In _partial_run_agent_loop, already completed, return derictly!")
             return kwargs["output"]
