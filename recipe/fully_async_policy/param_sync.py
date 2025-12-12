@@ -85,12 +85,8 @@ class ParameterSynchronizer:
 
         ray.get(self.rollouter.pause.remote())
 
-<<<<<<< HEAD
-        # Update MQ (max queue) version
-=======
         print(f"[ParameterSynchronizer] rollout paused. cost {time.time() - start_time:.2f} seconds")
         # Update MQ version
->>>>>>> 38246890efb50e60d2471ac2518cb512ba8361ba
         self.mq_client.update_param_version_sync(version)
 
         # sync weights
