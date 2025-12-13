@@ -16,7 +16,7 @@ async_training:
 
 rollout:
   nnodes: 1
-  n_gpus_per_node: 4
+  n_gpus_per_node: 8
   total_rollout_steps: 8192
   total_epochs: 128
   test_freq: 5
@@ -27,9 +27,9 @@ trainer:
   critic_warmup: 0
   experiment_name: "30a3b_test_partial_fusion"
   nnodes: 1
-  n_gpus_per_node: 4
+  n_gpus_per_node: 8
   test_freq: 5
-  save_freq: 10
+  save_freq: -1
   total_epochs: 128
   val_before_train: false
   default_local_dir: /data/checkpoints/${trainer.project_name}/${trainer.experiment_name}
@@ -47,6 +47,7 @@ actor_rollout_ref:
   hybrid_engine: false
   model:
     path: "Qwen/Qwen3-30B-A3B"
+    #path: "Qwen/Qwen3-32B"
     use_remove_padding: true
     enable_gradient_checkpointing: true
       # # lora
@@ -65,7 +66,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.28
     use_kl_loss: false
     entropy_coeff: 0
-    ulysses_sequence_parallel_size: 1
+    ulysses_sequence_parallel_size: 8
     strategy: fsdp2
     fsdp_config:
       param_offload: false
@@ -80,9 +81,9 @@ actor_rollout_ref:
       enable: true
       max_assistant_turns: 50
     calculate_log_probs: true
-    gpu_memory_utilization: 0.30
+    gpu_memory_utilization: 0.60
     n: 16
-    tensor_model_parallel_size: 4
+    tensor_model_parallel_size: 2
     temperature: 1.0
     top_p: 1
     top_k: -1
@@ -127,4 +128,3 @@ custom_reward_function:
 reward_model:
   launch_reward_fn_async: true
   enable: false
-
