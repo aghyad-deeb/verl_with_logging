@@ -197,7 +197,7 @@ def load_reward_manager(
 
 
 @tqbridge(put_data=False)
-def compute_reward(data: DataProto, reward_fn: AbstractRewardManager) -> tuple[torch.Tensor, dict[str, Any]]:
+def compute_reward(data: DataProto, reward_fn: AbstractRewardManager, config=None) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Compute reward for a batch of data.
     Args:
@@ -207,7 +207,7 @@ def compute_reward(data: DataProto, reward_fn: AbstractRewardManager) -> tuple[t
         Tuple of reward tensor and extra info dictionary.
     """
     try:
-        reward_result = reward_fn(data, return_dict=True)
+        reward_result = reward_fn(data, return_dict=True, conig=config)
         reward_tensor = reward_result["reward_tensor"]
         reward_extra_infos_dict = reward_result.get("reward_extra_info", {})
     except Exception as e:
@@ -234,4 +234,4 @@ def compute_reward_async(data: DataProto, config=None, tokenizer=None, reward_fn
             config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
         )
 
-    return compute_reward(data, reward_fn)
+    return compute_reward(data, reward_fn, config=config)

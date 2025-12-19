@@ -43,7 +43,7 @@ class NaiveRewardManager(AbstractRewardManager):
         self.compute_score = compute_score or default_compute_score
         self.reward_fn_key = reward_fn_key  # Store the key for accessing the data source
 
-    def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
+    def __call__(self, data: DataProto, return_dict: bool = False, config=None) -> torch.Tensor | dict[str, Any]:
         """We will expand this function gradually based on the available datasets"""
 
         # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
@@ -85,6 +85,12 @@ class NaiveRewardManager(AbstractRewardManager):
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
             extra_info["num_turns"] = num_turns
             extra_info["rollout_reward_scores"] = rollout_reward_scores
+            if config: 
+                extra_info["project_name"] = config.trainer.project_name
+                extra_info["experiment"] = config.trainer.experiment_name
+            else:
+                extra_info["project_name"] = "unspecified"
+                extra_info["experiment"] = "unspecified"
 
             score = self.compute_score(
                 data_source=data_source,

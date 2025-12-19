@@ -182,6 +182,8 @@ source __replay_state.sh &> /dev/null
         self.files = self.flatten_structure(files_dict)
 
         messages = list(kwargs["raw_prompt"])
+        # Track full conversation for logging
+        conversation_messages = [dict(msg) for msg in messages]
         metrics = {}
         # empty command history for each run
         self.command_history = startup_commands
@@ -228,6 +230,11 @@ source __replay_state.sh &> /dev/null
                     None,
                     lambda: self.tokenizer.decode(output.token_ids)
                 )
+                # Track assistant message for logging
+                conversation_messages.append({
+                    "role": "assistant",
+                    "content": decoded_output
+                })
                 cmd = await self.loop.run_in_executor(
                     None,
                     lambda: self.extract_bash_command(decoded_output)
@@ -249,6 +256,11 @@ source __replay_state.sh &> /dev/null
                     "role": "tool",
                     "content": cmd_output
                 }]
+                # Track tool message for logging
+                conversation_messages.append({
+                    "role": "tool",
+                    "content": cmd_output
+                })
                 cmd_message_ids = await self.loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.apply_chat_template(
@@ -285,6 +297,7 @@ source __replay_state.sh &> /dev/null
             metrics=metrics,
             extra_fields=dict(
                 fetched_files=fetched_files,
+                messages=conversation_messages,
             )
         )
         return output

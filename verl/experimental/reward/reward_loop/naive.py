@@ -50,6 +50,12 @@ class NaiveRewardLoopManager(RewardLoopManagerBase):
         rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
         extra_info["num_turns"] = num_turns
         extra_info["rollout_reward_scores"] = rollout_reward_scores
+        if self.config: 
+            extra_info["project_name"] = self.config.trainer.project_name
+            extra_info["experiment"] = self.config.trainer.experiment_name
+        else:
+            extra_info["project_name"] = "unspecified"
+            extra_info["experiment"] = "unspecified"
 
         response_str = await self.loop.run_in_executor(
             None, lambda: self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
