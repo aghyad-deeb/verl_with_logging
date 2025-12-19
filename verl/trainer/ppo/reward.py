@@ -207,7 +207,7 @@ def compute_reward(data: DataProto, reward_fn: AbstractRewardManager, config=Non
         Tuple of reward tensor and extra info dictionary.
     """
     try:
-        reward_result = reward_fn(data, return_dict=True, conig=config)
+        reward_result = reward_fn(data, return_dict=True, config=config)
         reward_tensor = reward_result["reward_tensor"]
         reward_extra_infos_dict = reward_result.get("reward_extra_info", {})
     except Exception as e:
