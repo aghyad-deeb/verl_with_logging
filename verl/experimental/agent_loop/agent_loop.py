@@ -418,6 +418,7 @@ class AgentLoopWorkerBase:
             validate=trajectory["validate"],
             name="agent_loop",
             trace=trace,
+            data_source=kwargs.get("data_source"),
         ):
             if agent_name is None:
                 agent_name = self.config.actor_rollout_ref.rollout.agent.default_agent_loop

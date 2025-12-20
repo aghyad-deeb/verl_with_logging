@@ -45,15 +45,9 @@ class InspectLogBuffer:
         """Add a sample to the buffer. Flushes when step changes."""
         with self._lock:
             sample_step = attributes.get("step")
-            sample_index = attributes.get("sample_index")
-            rollout_n = attributes.get("rollout_n")
-            
-            # Debug logging
-            print(f"[Inspect Buffer] add_sample: step={sample_step}, sample_index={sample_index}, rollout_n={rollout_n}, buffer_size={len(self._samples)}, current_step={self._current_step}")
             
             # If step changed, flush previous step's samples first
             if self._current_step is not None and sample_step != self._current_step and self._samples:
-                print(f"[Inspect Buffer] Step changed from {self._current_step} to {sample_step}, flushing {len(self._samples)} samples")
                 self._flush_internal()
             
             self._current_step = sample_step
@@ -124,7 +118,10 @@ class InspectLogBuffer:
                     "uuid": shortuuid.uuid(),
                     "input": s["messages"][0]["content"][:200] if s["messages"] else "",
                     "target": "rollout",
-                    "scores": {"step": {"value": s["attributes"].get("step", 0)}},
+                    "scores": {
+                        "step": {"value": s["attributes"].get("step", 0)},
+                        "data_source": {"value": 1, "answer": s["attributes"].get("data_source", "unknown")},
+                    },
                 })
             
             # Build header.json (full EvalLog)
@@ -143,9 +140,12 @@ class InspectLogBuffer:
                 },
             }
             
-            # Include step number in filename for easy identification
+            # Include step number and worker PID in filename for easy identification
+            # Multiple Ray workers have separate buffers, so we include PID to distinguish them
+            import os
             step = self._current_step if self._current_step is not None else "unknown"
-            filename = f"{config.experiment_name}_step{step}_{eval_id[:8]}.eval"
+            worker_id = os.getpid()
+            filename = f"{config.experiment_name}_step{step}_w{worker_id}_{eval_id[:8]}.eval"
             s3_key = f"logs/{self.s3_prefix}/{self._date}/{filename}"
             
             # Create zip file in memory with proper Inspect AI structure
@@ -187,6 +187,7 @@ class InspectLogBuffer:
                         "scores": {
                             "step": {"value": s["attributes"].get("step", 0), "answer": None},
                             "sample_index": {"value": s["attributes"].get("sample_index", 0), "answer": None},
+                            "data_source": {"value": 1, "answer": s["attributes"].get("data_source", "unknown")},
                         },
                         "metadata": {**s["attributes"], "timestamp": s["timestamp"]},
                     }
@@ -336,7 +337,8 @@ class RolloutTraceConfig:
 
 @contextlib.contextmanager
 def rollout_trace_attr(
-    sample_index=None, step=None, rollout_n=None, name="rollout_trace", validate=False, trace: bool = True
+    sample_index=None, step=None, rollout_n=None, name="rollout_trace", validate=False, trace: bool = True,
+    data_source=None,
 ):
     """A context manager to add attributes to a trace for the configured backend.
 
@@ -347,6 +349,7 @@ def rollout_trace_attr(
         name: Name for the trace span (used by mlflow backend).
         validate: Whether this is a validation run.
         trace: If False, disables tracing for the duration of the context.
+        data_source: Data source identifier for the sample.
     """
     backend = RolloutTraceConfig.get_backend()
 
@@ -369,6 +372,8 @@ def rollout_trace_attr(
             attributes["step"] = step
         if rollout_n is not None:
             attributes["rollout_n"] = rollout_n
+        if data_source is not None:
+            attributes["data_source"] = data_source
         attributes["validate"] = validate
         attributes["experiment_name"] = RolloutTraceConfig.get_instance().experiment_name
 
