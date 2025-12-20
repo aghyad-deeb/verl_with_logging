@@ -112,16 +112,19 @@ class InspectLogBuffer:
             # Build sample summaries
             summaries = []
             for s in self._samples:
+                scores = {
+                    "step": {"value": s["attributes"].get("step", 0)},
+                    "data_source": {"value": s["attributes"].get("data_source", "unknown")},
+                }
+                if "reward" in s["attributes"]:
+                    scores["reward"] = {"value": s["attributes"]["reward"]}
                 summaries.append({
                     "id": s["id"],
                     "epoch": 1,
                     "uuid": shortuuid.uuid(),
                     "input": s["messages"][0]["content"][:200] if s["messages"] else "",
-                    "target": "rollout",
-                    "scores": {
-                        "step": {"value": s["attributes"].get("step", 0)},
-                        "data_source": {"value": 1, "answer": s["attributes"].get("data_source", "unknown")},
-                    },
+                    "target": s["attributes"].get("data_source", "unknown"),
+                    "scores": scores,
                 })
             
             # Build header.json (full EvalLog)
@@ -171,7 +174,7 @@ class InspectLogBuffer:
                         "epoch": 1,
                         "uuid": shortuuid.uuid(),
                         "input": s["messages"][0]["content"] if s["messages"] else "",
-                        "target": "rollout",
+                        "target": s["attributes"].get("data_source", "unknown"),
                         "messages": messages_with_ids,
                         "output": {
                             "model": config.project_name or "unknown",
@@ -185,9 +188,10 @@ class InspectLogBuffer:
                             }],
                         },
                         "scores": {
-                            "step": {"value": s["attributes"].get("step", 0), "answer": None},
-                            "sample_index": {"value": s["attributes"].get("sample_index", 0), "answer": None},
-                            "data_source": {"value": 1, "answer": s["attributes"].get("data_source", "unknown")},
+                            "step": {"value": s["attributes"].get("step", 0)},
+                            "sample_index": {"value": s["attributes"].get("sample_index", 0)},
+                            "data_source": {"value": s["attributes"].get("data_source", "unknown")},
+                            **( {"reward": {"value": s["attributes"]["reward"]}} if "reward" in s["attributes"] else {}),
                         },
                         "metadata": {**s["attributes"], "timestamp": s["timestamp"]},
                     }
@@ -474,11 +478,30 @@ def rollout_trace_op(func):
             # Execute the function
             result = await func(self, *args, **kwargs)
             
+            # Only log at _run_agent_loop_inner level (has raw_prompt), not at generate level
+            # This avoids double-logging
+            raw_prompt = inputs.get("raw_prompt")
+            if not raw_prompt:
+                return result
+            
             # Get current attributes from context
             attributes = _inspect_attributes.get().copy()
             
-            # Decode prompt and response to construct messages
+            # Get reward from result if available (from _InternalAgentLoopOutput)
+            reward_score = getattr(result, "reward_score", None)
+            if reward_score is not None:
+                attributes["reward"] = reward_score
+            
+            # raw_prompt is a list of message dicts like [{"role": "user", "content": "..."}]
+            # Convert to messages format, ensuring content is always a string
             messages = []
+            for msg in raw_prompt:
+                if isinstance(msg, dict):
+                    content = msg.get("content", "")
+                    # Content might be a list (for multimodal), convert to string
+                    if isinstance(content, list):
+                        content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
+                    messages.append({"role": msg.get("role", "user"), "content": str(content)})
             
             # Get tokenizer from self
             tokenizer = getattr(self, "tokenizer", None)
@@ -486,17 +509,16 @@ def rollout_trace_op(func):
             if enable_token2text and tokenizer:
                 loop = asyncio.get_running_loop()
                 
-                # Decode prompt_ids from inputs
-                prompt_ids = inputs.get("prompt_ids")
-                if prompt_ids:
-                    prompt_text = await loop.run_in_executor(None, tokenizer.decode, prompt_ids)
-                    messages.append({"role": "user", "content": prompt_text})
-                
-                # Decode response token_ids from result
-                response_ids = getattr(result, "token_ids", None)
-                if response_ids:
-                    response_text = await loop.run_in_executor(None, tokenizer.decode, response_ids)
-                    messages.append({"role": "assistant", "content": response_text})
+                # Get response from response_ids (tensor from _InternalAgentLoopOutput)
+                response_ids = getattr(result, "response_ids", None)
+                if response_ids is not None:
+                    # Handle tensor
+                    if hasattr(response_ids, "tolist"):
+                        ids_list = response_ids[0].tolist()
+                    else:
+                        ids_list = response_ids
+                    response_text = await loop.run_in_executor(None, tokenizer.decode, ids_list)
+                    messages.append({"role": "assistant", "content": str(response_text)})
             
             # Add to buffer if we have messages
             if messages:

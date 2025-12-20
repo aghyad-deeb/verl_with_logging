@@ -402,6 +402,32 @@ class AgentLoopWorkerBase:
 
         return output
 
+    @rollout_trace_op
+    async def _run_agent_loop_inner(
+        self,
+        sampling_params: dict[str, Any],
+        agent_name: str,
+        raw_prompt: str = "",
+        **kwargs,
+    ) -> _InternalAgentLoopOutput:
+        """Inner agent loop decorated with rollout_trace_op to capture reward."""
+        if agent_name is None:
+            agent_name = self.config.actor_rollout_ref.rollout.agent.default_agent_loop
+        assert agent_name in _agent_loop_registry, (
+            f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
+        )
+
+        agent_loop_config = _agent_loop_registry[agent_name]
+        agent_loop = hydra.utils.instantiate(
+            config=agent_loop_config,
+            trainer_config=_DummyConfig(config=self.config),
+            server_manager=self.server_manager,
+            tokenizer=self.tokenizer,
+            processor=self.processor,
+        )
+        output: AgentLoopOutput = await agent_loop.run(sampling_params, raw_prompt=raw_prompt, **kwargs)
+        return await self._agent_loop_postprocess(output, raw_prompt=raw_prompt, **kwargs)
+
     async def _run_agent_loop(
         self,
         sampling_params: dict[str, Any],
@@ -420,22 +446,11 @@ class AgentLoopWorkerBase:
             trace=trace,
             data_source=kwargs.get("data_source"),
         ):
-            if agent_name is None:
-                agent_name = self.config.actor_rollout_ref.rollout.agent.default_agent_loop
-            assert agent_name in _agent_loop_registry, (
-                f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
+            return await self._run_agent_loop_inner(
+                sampling_params=sampling_params,
+                agent_name=agent_name,
+                **kwargs,
             )
-
-            agent_loop_config = _agent_loop_registry[agent_name]
-            agent_loop = hydra.utils.instantiate(
-                config=agent_loop_config,
-                trainer_config=_DummyConfig(config=self.config),
-                server_manager=self.server_manager,
-                tokenizer=self.tokenizer,
-                processor=self.processor,
-            )
-            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            return await self._agent_loop_postprocess(output, **kwargs)
 
     async def _agent_loop_postprocess(self, output, **kwargs) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
