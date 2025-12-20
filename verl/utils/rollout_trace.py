@@ -29,20 +29,34 @@ _inspect_attributes: ContextVar[Dict[str, Any]] = ContextVar("_inspect_attribute
 
 
 class InspectLogBuffer:
-    """Thread-safe buffer for Inspect AI samples."""
+    """Thread-safe buffer for Inspect AI samples. Flushes per training step."""
     
     def __init__(self, s3_bucket: str, s3_prefix: str, flush_interval: int = 50):
         self.s3_bucket = s3_bucket
         self.s3_prefix = s3_prefix
-        self.flush_interval = flush_interval
+        self.flush_interval = flush_interval  # kept for fallback, but step-based flush is primary
         self._samples: List[Dict[str, Any]] = []
         self._lock = threading.Lock()
         self._sample_counter = 0
         self._date = datetime.now().strftime('%Y-%m-%d')
+        self._current_step: Optional[int] = None
         
     def add_sample(self, messages: List[Dict[str, str]], attributes: Dict[str, Any]):
-        """Add a sample to the buffer."""
+        """Add a sample to the buffer. Flushes when step changes."""
         with self._lock:
+            sample_step = attributes.get("step")
+            sample_index = attributes.get("sample_index")
+            rollout_n = attributes.get("rollout_n")
+            
+            # Debug logging
+            print(f"[Inspect Buffer] add_sample: step={sample_step}, sample_index={sample_index}, rollout_n={rollout_n}, buffer_size={len(self._samples)}, current_step={self._current_step}")
+            
+            # If step changed, flush previous step's samples first
+            if self._current_step is not None and sample_step != self._current_step and self._samples:
+                print(f"[Inspect Buffer] Step changed from {self._current_step} to {sample_step}, flushing {len(self._samples)} samples")
+                self._flush_internal()
+            
+            self._current_step = sample_step
             self._sample_counter += 1
             self._samples.append({
                 "id": self._sample_counter,
@@ -50,9 +64,6 @@ class InspectLogBuffer:
                 "attributes": attributes,
                 "timestamp": datetime.now().isoformat(),
             })
-            
-            if len(self._samples) >= self.flush_interval:
-                self._flush_internal()
     
     def _flush_internal(self):
         """Internal flush - must be called with lock held."""
@@ -60,118 +71,145 @@ class InspectLogBuffer:
             return
             
         try:
-            from inspect_ai.log import EvalLog, EvalSpec, EvalSample, EvalPlan, EvalResults, EvalStats, write_eval_log
-            from inspect_ai.log._log import EvalDataset, EvalConfig, EvalScore, EvalMetric
-            from inspect_ai.model import ChatMessageUser, ChatMessageAssistant, ChatMessageSystem, ChatMessageTool
-            from inspect_ai.model._model_output import ModelOutput, ModelUsage, ChatCompletionChoice
-            from inspect_ai.model._generate_config import GenerateConfig
-            from inspect_ai.scorer._metric import Score
+            import json
+            import io
+            import zipfile
+            import boto3
             import shortuuid
             
+            config = RolloutTraceConfig.get_instance()
             eval_id = shortuuid.uuid()
             run_id = shortuuid.uuid()
-            config = RolloutTraceConfig.get_instance()
-            
-            # Convert buffered samples to EvalSamples
-            eval_samples = []
-            for sample_data in self._samples:
-                messages = sample_data["messages"]
-                attrs = sample_data["attributes"]
-                
-                # Convert messages to Inspect format
-                inspect_messages = []
-                for msg in messages:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    if role == "system":
-                        inspect_messages.append(ChatMessageSystem(content=content))
-                    elif role == "user":
-                        inspect_messages.append(ChatMessageUser(content=content))
-                    elif role == "assistant":
-                        inspect_messages.append(ChatMessageAssistant(content=content))
-                    elif role == "tool":
-                        inspect_messages.append(ChatMessageTool(content=content, function="bash"))
-                
-                # Get last assistant message
-                last_assistant = ""
-                for msg in reversed(messages):
-                    if msg.get("role") == "assistant":
-                        last_assistant = msg.get("content", "")
-                        break
-                
-                eval_sample = EvalSample(
-                    id=sample_data["id"],
-                    epoch=1,
-                    input=inspect_messages[:2] if len(inspect_messages) >= 2 else inspect_messages,
-                    target="rollout",
-                    messages=inspect_messages,
-                    output=ModelOutput(
-                        model=config.project_name or "unknown",
-                        choices=[ChatCompletionChoice(
-                            message=ChatMessageAssistant(content=last_assistant),
-                            stop_reason="stop"
-                        )] if last_assistant else [],
-                        completion=last_assistant,
-                        usage=ModelUsage(input_tokens=0, output_tokens=0, total_tokens=0),
-                    ),
-                    scores={
-                        "step": Score(value=attrs.get("step", 0)),
-                        "sample_index": Score(value=attrs.get("sample_index", 0)),
-                    },
-                    metadata={
-                        **attrs,
-                        "timestamp": sample_data["timestamp"],
-                    },
-                    store={},
-                    events=[],
-                    model_usage={},
-                )
-                eval_samples.append(eval_sample)
-            
-            # Create EvalSpec
-            eval_spec = EvalSpec(
-                eval_id=eval_id,
-                run_id=run_id,
-                created=self._date,
-                task=config.experiment_name or "rollout_trace",
-                task_id=config.experiment_name or "rollout_trace",
-                task_version=1,
-                task_attribs={},
-                task_args={},
-                task_args_passed={},
-                dataset=EvalDataset(name="rollout", samples=len(eval_samples), sample_ids=[s.id for s in eval_samples]),
-                model=config.project_name or "unknown",
-                model_generate_config=GenerateConfig(),
-                model_args={},
-                config=EvalConfig(),
-                packages={},
-                metadata={
-                    "project_name": config.project_name,
-                    "experiment_name": config.experiment_name,
-                },
-                scorers=[],
-            )
-            
             now = datetime.now().isoformat()
-            eval_log = EvalLog(
-                version=2,
-                status="success",
-                eval=eval_spec,
-                plan=EvalPlan(name="rollout_trace", steps=[], config=GenerateConfig()),
-                results=EvalResults(total_samples=len(eval_samples), completed_samples=len(eval_samples), scores=[]),
-                stats=EvalStats(started_at=self._date, completed_at=now, model_usage={}),
-                samples=eval_samples,
-            )
             
-            # Write to S3
-            filename = f"{config.experiment_name}_{self._date}_{eval_id[:8]}.eval"
-            s3_path = f"s3://{self.s3_bucket}/logs/{self.s3_prefix}/{self._date}/{filename}"
-            write_eval_log(eval_log, s3_path)
+            # Build EvalSpec structure
+            eval_spec = {
+                "eval_id": eval_id,
+                "run_id": run_id,
+                "created": now,
+                "task": config.experiment_name or "rollout_trace",
+                "task_id": config.experiment_name or "rollout_trace",
+                "task_version": 1,
+                "model": config.project_name or "unknown",
+                "dataset": {
+                    "name": "rollout",
+                    "samples": len(self._samples),
+                    "sample_ids": [s["id"] for s in self._samples],
+                },
+                "config": {"epochs": 1},
+                "packages": {},
+                "metadata": {"project_name": config.project_name, "experiment_name": config.experiment_name},
+            }
             
+            # Build EvalPlan structure
+            eval_plan = {
+                "name": "rollout_trace",
+                "steps": [],
+                "config": {},
+            }
+            
+            # _journal/start.json - Required by Inspect AI
+            start_json = {
+                "version": 2,
+                "eval": eval_spec,
+                "plan": eval_plan,
+            }
+            
+            # Build sample summaries
+            summaries = []
+            for s in self._samples:
+                summaries.append({
+                    "id": s["id"],
+                    "epoch": 1,
+                    "uuid": shortuuid.uuid(),
+                    "input": s["messages"][0]["content"][:200] if s["messages"] else "",
+                    "target": "rollout",
+                    "scores": {"step": {"value": s["attributes"].get("step", 0)}},
+                })
+            
+            # Build header.json (full EvalLog)
+            header_json = {
+                "version": 2,
+                "status": "success",
+                "eval": eval_spec,
+                "plan": eval_plan,
+                "results": {
+                    "total_samples": len(self._samples),
+                    "completed_samples": len(self._samples),
+                },
+                "stats": {
+                    "started_at": now,
+                    "completed_at": now,
+                },
+            }
+            
+            # Include step number in filename for easy identification
+            step = self._current_step if self._current_step is not None else "unknown"
+            filename = f"{config.experiment_name}_step{step}_{eval_id[:8]}.eval"
+            s3_key = f"logs/{self.s3_prefix}/{self._date}/{filename}"
+            
+            # Create zip file in memory with proper Inspect AI structure
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
+                # 1. _journal/start.json (Required!)
+                zf.writestr("_journal/start.json", json.dumps(start_json, default=str))
+                
+                # 2. Individual sample files in samples/ directory
+                for s in self._samples:
+                    # Add id to each message (required by Inspect AI)
+                    messages_with_ids = []
+                    for idx, msg in enumerate(s["messages"]):
+                        msg_with_id = {
+                            "id": shortuuid.uuid(),
+                            "role": msg.get("role", "user"),
+                            "content": msg.get("content", ""),
+                        }
+                        messages_with_ids.append(msg_with_id)
+                    
+                    sample_data = {
+                        "id": s["id"],
+                        "epoch": 1,
+                        "uuid": shortuuid.uuid(),
+                        "input": s["messages"][0]["content"] if s["messages"] else "",
+                        "target": "rollout",
+                        "messages": messages_with_ids,
+                        "output": {
+                            "model": config.project_name or "unknown",
+                            "choices": [{
+                                "message": {
+                                    "id": shortuuid.uuid(),
+                                    "role": "assistant",
+                                    "content": s["messages"][-1]["content"] if s["messages"] else ""
+                                },
+                                "stop_reason": "stop"
+                            }],
+                        },
+                        "scores": {
+                            "step": {"value": s["attributes"].get("step", 0), "answer": None},
+                            "sample_index": {"value": s["attributes"].get("sample_index", 0), "answer": None},
+                        },
+                        "metadata": {**s["attributes"], "timestamp": s["timestamp"]},
+                    }
+                    zf.writestr(f"samples/{s['id']}_epoch_1.json", json.dumps(sample_data, default=str))
+                
+                # 3. summaries.json
+                zf.writestr("summaries.json", json.dumps(summaries, default=str))
+                
+                # 4. header.json
+                zf.writestr("header.json", json.dumps(header_json, default=str))
+            
+            # Upload to S3
+            s3_client = boto3.client('s3')
+            zip_buffer.seek(0)
+            s3_client.upload_fileobj(zip_buffer, self.s3_bucket, s3_key)
+            
+            print(f"[Inspect Logging] Flushed {len(self._samples)} samples to s3://{self.s3_bucket}/{s3_key}")
             self._samples.clear()
             
         except Exception as e:
+            import traceback
             print(f"[Inspect Logging] Warning: Failed to flush samples: {e}")
+            traceback.print_exc()
     
     def flush(self):
         """Flush buffered samples to S3."""
@@ -434,28 +472,26 @@ def rollout_trace_op(func):
             # Get current attributes from context
             attributes = _inspect_attributes.get().copy()
             
-            # Try to extract messages from result or inputs
+            # Decode prompt and response to construct messages
             messages = []
             
-            # Check if result has messages (from fusion_agent_loop)
-            if hasattr(result, "extra_fields") and isinstance(result.extra_fields, dict):
-                messages = result.extra_fields.get("messages", [])
+            # Get tokenizer from self
+            tokenizer = getattr(self, "tokenizer", None)
             
-            # If no messages, try to construct from prompt/response text
-            if not messages:
-                # Try to get raw_prompt from inputs
-                raw_prompt = inputs.get("raw_prompt", [])
-                if raw_prompt:
-                    for msg in raw_prompt:
-                        if isinstance(msg, dict):
-                            messages.append(msg)
+            if enable_token2text and tokenizer:
+                loop = asyncio.get_running_loop()
                 
-                # Add response if we can decode it
-                if enable_token2text and hasattr(self, "tokenizer"):
-                    if hasattr(result, "response_ids"):
-                        loop = asyncio.get_running_loop()
-                        response_text = await loop.run_in_executor(None, self.tokenizer.decode, result.response_ids)
-                        messages.append({"role": "assistant", "content": response_text})
+                # Decode prompt_ids from inputs
+                prompt_ids = inputs.get("prompt_ids")
+                if prompt_ids:
+                    prompt_text = await loop.run_in_executor(None, tokenizer.decode, prompt_ids)
+                    messages.append({"role": "user", "content": prompt_text})
+                
+                # Decode response token_ids from result
+                response_ids = getattr(result, "token_ids", None)
+                if response_ids:
+                    response_text = await loop.run_in_executor(None, tokenizer.decode, response_ids)
+                    messages.append({"role": "assistant", "content": response_text})
             
             # Add to buffer if we have messages
             if messages:

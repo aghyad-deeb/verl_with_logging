@@ -78,6 +78,10 @@ class TraceConfig(BaseConfig):
     backend: Optional[str] = None
     token2text: bool = False
     max_samples_per_step_per_worker: Optional[int] = None
+    inspect_s3_bucket: str = "rewardseeker"      # S3 bucket
+    inspect_s3_prefix: str = "rollout_traces"    # S3 prefix
+    inspect_flush_interval: int = 1             # Flush every N samples
+
 
     def __post_init__(self):
         if self.max_samples_per_step_per_worker is not None and self.max_samples_per_step_per_worker < 0:

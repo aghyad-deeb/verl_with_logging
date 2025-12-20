@@ -285,6 +285,9 @@ class AgentLoopWorkerBase:
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
         self.processor = hf_processor(local_path, trust_remote_code=True)
+        
+        # Pass tokenizer to server_manager for Inspect tracing
+        self.server_manager.tokenizer = self.tokenizer
 
         agent_loop_config_path = config.actor_rollout_ref.rollout.agent.agent_loop_config_path
         if agent_loop_config_path:
@@ -314,6 +317,9 @@ class AgentLoopWorkerBase:
             trace_config.get("backend"),
             trace_config.get("token2text", False),
             trace_config.get("max_samples_per_step_per_worker", None),
+            inspect_s3_bucket=trace_config.get("inspect_s3_bucket", "rewardseeker"),
+            inspect_s3_prefix=trace_config.get("inspect_s3_prefix", "rollout_traces"),
+            inspect_flush_interval=trace_config.get("inspect_flush_interval", 50),
         )
 
     @tqbridge()
