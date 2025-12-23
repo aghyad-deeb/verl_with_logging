@@ -126,7 +126,7 @@ class FusionAgentLoop(AgentLoopBase):
         if result.get("status", "") == "Success":
             return f"{result['run_result']['stdout']}"
         else:
-            if "run_result" in result and "stderr" in result["run_result"]:
+            if "run_result" in result and "stderr" in result.get("run_result", ""):
                 return f"Execution Failed: {result['run_result']['stderr']}"
             else:
                 print(f"\n\n\n\nExecution failed without std Err: {result=}\n\n\n\n")
