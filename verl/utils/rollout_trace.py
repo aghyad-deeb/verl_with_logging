@@ -492,36 +492,52 @@ def rollout_trace_op(func):
             if reward_score is not None:
                 attributes["reward"] = reward_score
             
-            # raw_prompt is a list of message dicts like [{"role": "user", "content": "..."}]
-            # Convert to messages format, ensuring content is always a string
-            messages = []
-            for msg in raw_prompt:
-                if isinstance(msg, dict):
-                    content = msg.get("content", "")
-                    # Content might be a list (for multimodal), convert to string
-                    if isinstance(content, list):
-                        content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
-                    messages.append({"role": msg.get("role", "user"), "content": str(content)})
+            # Check if result has full conversation messages (from agent loops like FusionAgentLoop)
+            # This includes all tool/command calls and their outputs
+            extra_fields = getattr(result, "extra_fields", {})
+            conversation_messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
             
-            # Get tokenizer from self
-            tokenizer = getattr(self, "tokenizer", None)
-            
-            if enable_token2text and tokenizer:
-                loop = asyncio.get_running_loop()
+            if conversation_messages and isinstance(conversation_messages, list) and len(conversation_messages) > 0:
+                # Use the full conversation which includes tool calls
+                messages = []
+                for msg in conversation_messages:
+                    if isinstance(msg, dict):
+                        content = msg.get("content", "")
+                        # Content might be a list (for multimodal), convert to string
+                        if isinstance(content, list):
+                            content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
+                        messages.append({"role": msg.get("role", "user"), "content": str(content)})
+            else:
+                # Fallback: reconstruct from raw_prompt + decoded response
+                # raw_prompt is a list of message dicts like [{"role": "user", "content": "..."}]
+                messages = []
+                for msg in raw_prompt:
+                    if isinstance(msg, dict):
+                        content = msg.get("content", "")
+                        # Content might be a list (for multimodal), convert to string
+                        if isinstance(content, list):
+                            content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
+                        messages.append({"role": msg.get("role", "user"), "content": str(content)})
                 
-                # Get response from response_ids (tensor from _InternalAgentLoopOutput)
-                response_ids = getattr(result, "response_ids", None)
-                if response_ids is not None:
-                    # Handle tensor
-                    if hasattr(response_ids, "tolist"):
-                        ids_list = response_ids[0].tolist()
-                    else:
-                        ids_list = response_ids
-                    response_text = await loop.run_in_executor(
-                        None, 
-                        lambda: tokenizer.decode(ids_list, skip_special_tokens=True)
-                    )
-                    messages.append({"role": "assistant", "content": str(response_text)})
+                # Get tokenizer from self
+                tokenizer = getattr(self, "tokenizer", None)
+                
+                if enable_token2text and tokenizer:
+                    loop = asyncio.get_running_loop()
+                    
+                    # Get response from response_ids (tensor from _InternalAgentLoopOutput)
+                    response_ids = getattr(result, "response_ids", None)
+                    if response_ids is not None:
+                        # Handle tensor
+                        if hasattr(response_ids, "tolist"):
+                            ids_list = response_ids[0].tolist()
+                        else:
+                            ids_list = response_ids
+                        response_text = await loop.run_in_executor(
+                            None, 
+                            lambda: tokenizer.decode(ids_list, skip_special_tokens=True)
+                        )
+                        messages.append({"role": "assistant", "content": str(response_text)})
             
             # Add to buffer if we have messages
             if messages:
@@ -573,20 +589,37 @@ def rollout_trace_op(func):
             # Get current attributes from context
             attributes = _inspect_attributes.get().copy()
             
-            # Try to extract messages from result or inputs
+            # Get reward from result if available
+            reward_score = getattr(result, "reward_score", None)
+            if reward_score is not None:
+                attributes["reward"] = reward_score
+            
+            # Check if result has full conversation messages (from agent loops like FusionAgentLoop)
+            # This includes all tool/command calls and their outputs
+            extra_fields = getattr(result, "extra_fields", {})
+            conversation_messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
+            
             messages = []
-            
-            # Check if result has messages (from fusion_agent_loop)
-            if hasattr(result, "extra_fields") and isinstance(result.extra_fields, dict):
-                messages = result.extra_fields.get("messages", [])
-            
-            # If no messages, try to construct from raw_prompt
-            if not messages:
+            if conversation_messages and isinstance(conversation_messages, list) and len(conversation_messages) > 0:
+                # Use the full conversation which includes tool calls
+                for msg in conversation_messages:
+                    if isinstance(msg, dict):
+                        content = msg.get("content", "")
+                        # Content might be a list (for multimodal), convert to string
+                        if isinstance(content, list):
+                            content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
+                        messages.append({"role": msg.get("role", "user"), "content": str(content)})
+            else:
+                # Fallback: try to construct from raw_prompt
                 raw_prompt = inputs.get("raw_prompt", [])
                 if raw_prompt:
                     for msg in raw_prompt:
                         if isinstance(msg, dict):
-                            messages.append(msg)
+                            content = msg.get("content", "")
+                            # Content might be a list (for multimodal), convert to string
+                            if isinstance(content, list):
+                                content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
+                            messages.append({"role": msg.get("role", "user"), "content": str(content)})
             
             # Add to buffer if we have messages
             if messages:
