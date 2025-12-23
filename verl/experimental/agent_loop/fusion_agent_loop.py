@@ -241,6 +241,12 @@ source __replay_state.sh &> /dev/null
                 )
 
                 # print(f"{cmd=}, {decoded_output=}")
+                # Log if pkill is detected in command
+                if cmd is not None and "pkill" in cmd:
+                    print(f"\n[WARNING] pkill detected in command!")
+                    print(f"Conversation: {conversation_messages}")
+                    print(f"Command: {cmd}\n")
+                
                 # if agent doesn't output a command, we exit the loop
                 if cmd is None:
                     # print(f"\nbreaking as cmd is None\n")
