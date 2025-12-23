@@ -517,7 +517,10 @@ def rollout_trace_op(func):
                         ids_list = response_ids[0].tolist()
                     else:
                         ids_list = response_ids
-                    response_text = await loop.run_in_executor(None, tokenizer.decode, ids_list)
+                    response_text = await loop.run_in_executor(
+                        None, 
+                        lambda: tokenizer.decode(ids_list, skip_special_tokens=True)
+                    )
                     messages.append({"role": "assistant", "content": str(response_text)})
             
             # Add to buffer if we have messages

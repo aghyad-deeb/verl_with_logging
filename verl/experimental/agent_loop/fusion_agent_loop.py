@@ -99,7 +99,7 @@ class FusionAgentLoop(AgentLoopBase):
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
-            'run_timout': 1,
+            'run_timeout': 1,
             'files': files,
             'fetch_files': files_to_fetch,
         })
