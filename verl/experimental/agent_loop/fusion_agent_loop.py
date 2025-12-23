@@ -241,12 +241,6 @@ source __replay_state.sh &> /dev/null
                 )
 
                 # print(f"{cmd=}, {decoded_output=}")
-                # Log if pkill is detected in command
-                if cmd is not None and "pkill" in cmd:
-                    print(f"\n[WARNING] pkill detected in command!")
-                    print(f"Conversation: {conversation_messages}")
-                    print(f"Command: {cmd}\n")
-                
                 # if agent doesn't output a command, we exit the loop
                 if cmd is None:
                     # print(f"\nbreaking as cmd is None\n")
@@ -254,10 +248,22 @@ source __replay_state.sh &> /dev/null
 
                 curr_input += output.token_ids
 
-                cmd_output, fetched_files = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.execute_agent_command(cmd)
-                )
+                # Check for dangerous commands that could kill the environment
+                dangerous_patterns = ["pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff", "rm -rf /", ":(){ :|:& };:"]
+                is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
+                
+                if is_dangerous:
+                    print(f"\n[WARNING] Dangerous command blocked!")
+                    print(f"Conversation: {conversation_messages}")
+                    print(f"Command: {cmd}\n")
+                    # Return realistic permission error instead of executing
+                    cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
+                    fetched_files = np.array(dict())
+                else:
+                    cmd_output, fetched_files = await self.loop.run_in_executor(
+                            None,
+                            lambda: self.execute_agent_command(cmd)
+                    )
                 cmd_message = [{
                     "role": "tool",
                     "content": cmd_output
