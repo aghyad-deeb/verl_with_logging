@@ -62,8 +62,8 @@ class ParameterSynchronizer:
         return self.weights_info
 
     def _init_weights_info(self):
-        self.weights_info, self.peft_config = self.actor_wg.get_actor_weights_info()[0]
-        self.rollout_wg.set_actor_weights_info(self.weights_info)
+        self.base_weights_info, self.lora_weights_info, self.peft_config = self.actor_wg.get_actor_weights_info()[0]
+        self.rollout_wg.set_actor_weights_info(self.base_weights_info, self.lora_weights_info)
 
     def _init_sync_group(self):
         print("[ParameterSynchronizer] Initializing parameter synchronization group...")
@@ -76,7 +76,7 @@ class ParameterSynchronizer:
             group_name=self.sync_group_name,
         )
 
-    def sync_weights(self, version, validate=False, global_steps=0):
+    def sync_weights(self, version, validate=False, global_steps=0, sync_base_if_lora=False):
         """Sync weights between trainer and rollouter, and update parameter version"""
         start_time = time.time()
 
@@ -89,11 +89,16 @@ class ParameterSynchronizer:
         # Update MQ version
         self.mq_client.update_param_version_sync(version)
 
+        if sync_base_if_lora:
+            self.actor_wg.base_sync_done = False
+            self.rollout_wg.base_sync_done = False
         # sync weights
-        self.actor_wg.sync_rollout_weights(peft_config=self.peft_config)
-        ray.get(self.rollout_wg.sync_rollout_weights(peft_config=self.peft_config))
+        self.actor_wg.sync_rollout_weights(peft_config=self.peft_config, sync_base_if_lora=sync_base_if_lora)
+        ray.get(self.rollout_wg.sync_rollout_weights(peft_config=self.peft_config, sync_base_if_lora=sync_base_if_lora))
         end_time = time.time()
         print(f"[ParameterSynchronizer] sync_weights success. cost {end_time - start_time:.2f} seconds")
+        self.actor_wg.base_sync_done = True
+        self.rollout_wg.base_sync_done = True
 
         # Async Update rollout version & validation
         self.wait_last_update = self.rollouter.update_param_version.remote(version, validate, global_steps)
