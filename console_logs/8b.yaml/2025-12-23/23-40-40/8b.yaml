@@ -30,10 +30,9 @@ trainer:
   n_gpus_per_node: 2
   test_freq: 5
   save_freq: 1
-  max_actor_ckpt_to_keep: 2
   total_epochs: 128
   val_before_train: false
-  default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  default_local_dir: /data/checkpoints/${trainer.project_name}/${trainer.experiment_name}
 
 algorithm:
   adv_estimator: grpo
