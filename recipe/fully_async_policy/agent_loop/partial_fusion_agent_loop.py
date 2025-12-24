@@ -227,97 +227,96 @@ source __replay_state.sh &> /dev/null
                 # Already completed, return as-is
                 return maybe_partial_output
 
-        with simple_timer("generate_sequences_all_turns", metrics):
-            while num_turns < max_num_turns:
-                # Check for external cancellation
-                if cancellation_event and cancellation_event.is_set():
-                    is_cancel = True
-                    break
+        while num_turns < max_num_turns:
+            # Check for external cancellation
+            if cancellation_event and cancellation_event.is_set():
+                is_cancel = True
+                break
 
-                # Use processor if available for multimodal support
-                assert len(curr_input) > 0
-                assert isinstance(curr_input, list)
-                assert isinstance(curr_input[-1], int)
+            # Use processor if available for multimodal support
+            assert len(curr_input) > 0
+            assert isinstance(curr_input, list)
+            assert isinstance(curr_input[-1], int)
 
-                token_ids, log_probs, is_cancel = await self.server_manager.generate_for_partial(
-                    request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
-                )
+            token_ids, log_probs, is_cancel = await self.server_manager.generate_for_partial(
+                request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
+            )
 
-                assert isinstance(token_ids, list)
-                if len(token_ids) == 0:
-                    # No tokens generated, treat as cancellation
-                    is_cancel = True
-                    break
-                assert isinstance(token_ids[0], int)
-                
-                all_output_with_tool += token_ids
-                mask += [1] * len(token_ids)
-                if log_probs:
-                    log_probs_all += log_probs
+            assert isinstance(token_ids, list)
+            if len(token_ids) == 0:
+                # No tokens generated, treat as cancellation
+                is_cancel = True
+                break
+            assert isinstance(token_ids[0], int)
+            
+            all_output_with_tool += token_ids
+            mask += [1] * len(token_ids)
+            if log_probs:
+                log_probs_all += log_probs
 
-                decoded_output = await self.loop.run_in_executor(
+            decoded_output = await self.loop.run_in_executor(
+                None,
+                lambda: self.tokenizer.decode(token_ids)
+            )
+            # Track assistant message for logging
+            conversation_messages.append({
+                "role": "assistant",
+                "content": decoded_output
+            })
+            cmd = await self.loop.run_in_executor(
+                None,
+                lambda: self.extract_bash_command(decoded_output)
+            )
+            # if agent doesn't output a command, we exit the loop (completed)
+            if cmd is None:
+                break
+
+            curr_input += token_ids
+
+            # Check response length before tool execution
+            if len(mask) >= self.response_length:
+                break
+
+            # Check for dangerous commands that could kill the environment
+            dangerous_patterns = ["pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff", "rm -rf /", ":(){ :|:& };:"]
+            is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
+            
+            if is_dangerous:
+                # Return realistic permission error instead of executing
+                cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
+                fetched_files = np.array(dict())
+            else:
+                cmd_output, fetched_files = await self.loop.run_in_executor(
                     None,
-                    lambda: self.tokenizer.decode(token_ids)
+                    lambda: self.execute_agent_command(cmd)
                 )
-                # Track assistant message for logging
-                conversation_messages.append({
-                    "role": "assistant",
-                    "content": decoded_output
-                })
-                cmd = await self.loop.run_in_executor(
-                    None,
-                    lambda: self.extract_bash_command(decoded_output)
-                )
-                # if agent doesn't output a command, we exit the loop (completed)
-                if cmd is None:
-                    break
+            cmd_message = [{
+                "role": "tool",
+                "content": cmd_output
+            }]
+            # Track tool message for logging
+            conversation_messages.append({
+                "role": "tool",
+                "content": cmd_output
+            })
+            cmd_message_ids = await self.loop.run_in_executor(
+                None,
+                lambda: self.tokenizer.apply_chat_template(
+                    cmd_message, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                ),
+            )
+            curr_input += cmd_message_ids
+            all_output_with_tool += cmd_message_ids
+            mask += [0] * len(cmd_message_ids)
+            
+            if len(mask) >= self.response_length:
+                break
 
-                curr_input += token_ids
+            # If cancelled, save state after executing any pending command
+            if is_cancel:
+                break
 
-                # Check response length before tool execution
-                if len(mask) >= self.response_length:
-                    break
-
-                # Check for dangerous commands that could kill the environment
-                dangerous_patterns = ["pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff", "rm -rf /", ":(){ :|:& };:"]
-                is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
-                
-                if is_dangerous:
-                    # Return realistic permission error instead of executing
-                    cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
-                    fetched_files = np.array(dict())
-                else:
-                    cmd_output, fetched_files = await self.loop.run_in_executor(
-                        None,
-                        lambda: self.execute_agent_command(cmd)
-                    )
-                cmd_message = [{
-                    "role": "tool",
-                    "content": cmd_output
-                }]
-                # Track tool message for logging
-                conversation_messages.append({
-                    "role": "tool",
-                    "content": cmd_output
-                })
-                cmd_message_ids = await self.loop.run_in_executor(
-                    None,
-                    lambda: self.tokenizer.apply_chat_template(
-                        cmd_message, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
-                    ),
-                )
-                curr_input += cmd_message_ids
-                all_output_with_tool += cmd_message_ids
-                mask += [0] * len(cmd_message_ids)
-                
-                if len(mask) >= self.response_length:
-                    break
-
-                # If cancelled, save state after executing any pending command
-                if is_cancel:
-                    break
-
-                num_turns += 1
+            num_turns += 1
 
         # Build output
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
