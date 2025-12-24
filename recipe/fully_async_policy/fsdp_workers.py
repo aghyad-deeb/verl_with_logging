@@ -75,12 +75,11 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
     def sync_rollout_weights(self, peft_config=None, sync_base_if_lora=False):
     # async def sync_rollout_weights(self):
         assert (self._is_actor or self._is_rollout) and not self.config.hybrid_engine
-        #assert hasattr(self, "_weights_info") and self._weights_info is not None
 
         if self._is_actor and self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
         if not peft_config or sync_base_if_lora:
-            assert hasattr(self, "_base_weights_info") and self._weights_info is not None
+            assert hasattr(self, "_base_weights_info") and self._base_weights_info is not None
             print(f'[First if in sync_rolloutweights] {sync_base_if_lora=} {peft_config is None=}')
             params, peft_config = self._get_actor_params(get_base_params=True) if self._is_actor else (None, None)
             if self._is_rollout:
@@ -108,14 +107,14 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
                 offload_fsdp_model_to_cpu(self.actor_module_fsdp)
             get_torch_device().empty_cache()
         else:
-            assert hasattr(self, "_lora_weights_info") and self._weights_info is not None
+            assert hasattr(self, "_lora_weights_info") and self._lora_weights_info is not None
             print(f"\n`sync_rollout_weights`. In else. {self._is_actor=}, {self._is_rollout=} \n")
             per_tensor_param_items, peft_config_from_actor = self._get_actor_params(get_base_params=False) if self._is_actor else (None, None)
             per_tensor_param = dict(per_tensor_param_items) if self._is_actor else None
             print(f"after per_tensor_param. {self._is_actor=}, {self._is_rollout=}")
             # assert isinstance(per_tensor_param, dict)
             collected_per_tensor_param = dict()
-            for key, shape, dtype in self._weights_info:
+            for key, shape, dtype in self._lora_weights_info:
                 tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
                 if self._is_actor:
                     assert key in per_tensor_param, f"{key=}, {list(dict(per_tensor_param).keys())=}"
