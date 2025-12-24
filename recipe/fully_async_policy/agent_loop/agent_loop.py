@@ -164,6 +164,8 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorkerBase):
         **kwargs,
     ) -> AgentLoopOutput:
         # Completed, return directly
+        if not agent_name:
+            agent_name = "partial_single_turn_agent"
         if not "partial" in agent_name:
             agent_name = "partial_" + agent_name
         if kwargs["output"] is not None and not kwargs["output"].extra_fields.get("is_cancel", False):

@@ -70,7 +70,13 @@ class InspectLogBuffer:
             import zipfile
             import boto3
             import shortuuid
-            
+            import os
+
+            aws_key = os.environ.get('AWS_ACCESS_KEY_ID')
+            if aws_key:
+                print(f"[Inspect Logging] AWS credentials loaded (key starts with: {aws_key[:5]}...)")
+            else:
+                print("[Inspect Logging] WARNING: AWS_ACCESS_KEY_ID not found in environment!")
             config = RolloutTraceConfig.get_instance()
             eval_id = shortuuid.uuid()
             run_id = shortuuid.uuid()
