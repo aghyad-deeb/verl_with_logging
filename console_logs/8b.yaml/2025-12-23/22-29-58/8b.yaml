@@ -59,7 +59,7 @@ actor_rollout_ref:
     loss_agg_mode: "token-mean"
     ppo_mini_batch_size: 48
     use_dynamic_bsz: true
-    ppo_max_token_len_per_gpu: 14_000
+    ppo_max_token_len_per_gpu: 30_000
     ppo_micro_batch_size_per_gpu: 1
     clip_ratio_low: 0.2
     clip_ratio_high: 0.28

@@ -16,7 +16,7 @@ async_training:
 
 rollout:
   nnodes: 1
-  n_gpus_per_node: 6
+  n_gpus_per_node: 4
   total_rollout_steps: 8192
   total_epochs: 128
   test_freq: 5
@@ -25,9 +25,9 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "8b_apples_to_apples_48mb_6train_2rollout"
+  experiment_name: "8b_apples_to_apples_48mb"
   nnodes: 1
-  n_gpus_per_node: 2
+  n_gpus_per_node: 4
   test_freq: 5
   save_freq: -1
   total_epochs: 128
@@ -57,9 +57,9 @@ actor_rollout_ref:
     optim:
       lr: 2e-5
     loss_agg_mode: "token-mean"
-    ppo_mini_batch_size: 48
+    ppo_mini_batch_size: 16
     use_dynamic_bsz: true
-    ppo_max_token_len_per_gpu: 14_000
+    ppo_max_token_len_per_gpu: 30_000
     ppo_micro_batch_size_per_gpu: 1
     clip_ratio_low: 0.2
     clip_ratio_high: 0.28
