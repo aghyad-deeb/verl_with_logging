@@ -30,7 +30,7 @@ _inspect_attributes: ContextVar[Dict[str, Any]] = ContextVar("_inspect_attribute
 
 class InspectLogBuffer:
     """Thread-safe buffer for Inspect AI samples. Flushes per training step."""
-    
+
     def __init__(self, s3_bucket: str, s3_prefix: str, flush_interval: int = 50):
         self.s3_bucket = s3_bucket
         self.s3_prefix = s3_prefix
@@ -40,16 +40,16 @@ class InspectLogBuffer:
         self._sample_counter = 0
         self._date = datetime.now().strftime('%Y-%m-%d')
         self._current_step: Optional[int] = None
-        
+
     def add_sample(self, messages: List[Dict[str, str]], attributes: Dict[str, Any]):
         """Add a sample to the buffer. Flushes when step changes."""
         with self._lock:
             sample_step = attributes.get("step")
-            
+
             # If step changed, flush previous step's samples first
             if self._current_step is not None and sample_step != self._current_step and self._samples:
                 self._flush_internal()
-            
+
             self._current_step = sample_step
             self._sample_counter += 1
             self._samples.append({
@@ -58,12 +58,12 @@ class InspectLogBuffer:
                 "attributes": attributes,
                 "timestamp": datetime.now().isoformat(),
             })
-    
+
     def _flush_internal(self):
         """Internal flush - must be called with lock held."""
         if not self._samples:
             return
-            
+
         try:
             import json
             import io
@@ -81,7 +81,7 @@ class InspectLogBuffer:
             eval_id = shortuuid.uuid()
             run_id = shortuuid.uuid()
             now = datetime.now().isoformat()
-            
+
             # Build EvalSpec structure
             eval_spec = {
                 "eval_id": eval_id,
@@ -100,21 +100,21 @@ class InspectLogBuffer:
                 "packages": {},
                 "metadata": {"project_name": config.project_name, "experiment_name": config.experiment_name},
             }
-            
+
             # Build EvalPlan structure
             eval_plan = {
                 "name": "rollout_trace",
                 "steps": [],
                 "config": {},
             }
-            
+
             # _journal/start.json - Required by Inspect AI
             start_json = {
                 "version": 2,
                 "eval": eval_spec,
                 "plan": eval_plan,
             }
-            
+
             # Build sample summaries
             summaries = []
             for s in self._samples:
@@ -132,7 +132,7 @@ class InspectLogBuffer:
                     "target": s["attributes"].get("data_source", "unknown"),
                     "scores": scores,
                 })
-            
+
             # Build header.json (full EvalLog)
             header_json = {
                 "version": 2,
@@ -148,7 +148,7 @@ class InspectLogBuffer:
                     "completed_at": now,
                 },
             }
-            
+
             # Include step number and worker PID in filename for easy identification
             # Multiple Ray workers have separate buffers, so we include PID to distinguish them
             import os
@@ -156,13 +156,13 @@ class InspectLogBuffer:
             worker_id = os.getpid()
             filename = f"{config.experiment_name}_step{step}_w{worker_id}_{eval_id[:8]}.eval"
             s3_key = f"logs/{self.s3_prefix}/{self._date}/{filename}"
-            
+
             # Create zip file in memory with proper Inspect AI structure
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=5) as zf:
                 # 1. _journal/start.json (Required!)
                 zf.writestr("_journal/start.json", json.dumps(start_json, default=str))
-                
+
                 # 2. Individual sample files in samples/ directory
                 for s in self._samples:
                     # Add id to each message (required by Inspect AI)
@@ -174,7 +174,7 @@ class InspectLogBuffer:
                             "content": msg.get("content", ""),
                         }
                         messages_with_ids.append(msg_with_id)
-                    
+
                     sample_data = {
                         "id": s["id"],
                         "epoch": 1,
@@ -202,31 +202,31 @@ class InspectLogBuffer:
                         "metadata": {**s["attributes"], "timestamp": s["timestamp"]},
                     }
                     zf.writestr(f"samples/{s['id']}_epoch_1.json", json.dumps(sample_data, default=str))
-                
+
                 # 3. summaries.json
                 zf.writestr("summaries.json", json.dumps(summaries, default=str))
-                
+
                 # 4. header.json
                 zf.writestr("header.json", json.dumps(header_json, default=str))
-            
+
             # Upload to S3
             s3_client = boto3.client('s3')
             zip_buffer.seek(0)
             s3_client.upload_fileobj(zip_buffer, self.s3_bucket, s3_key)
-            
+
             print(f"[Inspect Logging] Flushed {len(self._samples)} samples to s3://{self.s3_bucket}/{s3_key}")
             self._samples.clear()
-            
+
         except Exception as e:
             import traceback
             print(f"[Inspect Logging] Warning: Failed to flush samples: {e}")
             traceback.print_exc()
-    
+
     def flush(self):
         """Flush buffered samples to S3."""
         with self._lock:
             self._flush_internal()
-    
+
     def finalize(self):
         """Finalize and flush any remaining samples."""
         self.flush()
@@ -333,7 +333,7 @@ class RolloutTraceConfig:
     @classmethod
     def enable_token2text(cls) -> Optional[bool]:
         return cls.get_instance().token2text
-    
+
     @classmethod
     def get_inspect_buffer(cls) -> Optional[InspectLogBuffer]:
         return cls.get_instance()._inspect_buffer
@@ -415,10 +415,25 @@ def rollout_trace_attr(
         yield
 
 
+def _get_trace_enabled():
+    """Access _trace_enabled via function to avoid closure serialization issues with Ray."""
+    return _trace_enabled.get()
+
+
+def _get_inspect_attributes():
+    """Access _inspect_attributes via function to avoid closure serialization issues with Ray."""
+    return _inspect_attributes.get()
+
+
 def rollout_trace_op(func):
+    # NOTE: This decorator must NOT capture ContextVar objects directly in closures.
+    # Ray cannot serialize ContextVar objects, so we access them through helper functions
+    # that are looked up at runtime via the module's global namespace.
+
     @functools.wraps(func)
     async def async_wrapper(self, *args, **kwargs):
-        if not _trace_enabled.get():
+        # Access ContextVar through helper function to avoid serialization issues
+        if not _get_trace_enabled():
             return await func(self, *args, **kwargs)
 
         backend = RolloutTraceConfig.get_backend()
@@ -483,26 +498,26 @@ def rollout_trace_op(func):
         elif backend == "inspect":
             # Execute the function
             result = await func(self, *args, **kwargs)
-            
+
             # Only log at _run_agent_loop_inner level (has raw_prompt), not at generate level
             # This avoids double-logging
             raw_prompt = inputs.get("raw_prompt")
             if not raw_prompt:
                 return result
-            
-            # Get current attributes from context
-            attributes = _inspect_attributes.get().copy()
-            
+
+            # Get current attributes from context (via helper function)
+            attributes = _get_inspect_attributes().copy()
+
             # Get reward from result if available (from _InternalAgentLoopOutput)
             reward_score = getattr(result, "reward_score", None)
             if reward_score is not None:
                 attributes["reward"] = reward_score
-            
+
             # Check if result has full conversation messages (from agent loops like FusionAgentLoop)
             # This includes all tool/command calls and their outputs
             extra_fields = getattr(result, "extra_fields", {})
             conversation_messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
-            
+
             if conversation_messages and isinstance(conversation_messages, list) and len(conversation_messages) > 0:
                 # Use the full conversation which includes tool calls
                 messages = []
@@ -524,13 +539,13 @@ def rollout_trace_op(func):
                         if isinstance(content, list):
                             content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
                         messages.append({"role": msg.get("role", "user"), "content": str(content)})
-                
+
                 # Get tokenizer from self
                 tokenizer = getattr(self, "tokenizer", None)
-                
+
                 if enable_token2text and tokenizer:
                     loop = asyncio.get_running_loop()
-                    
+
                     # Get response from response_ids (tensor from _InternalAgentLoopOutput)
                     response_ids = getattr(result, "response_ids", None)
                     if response_ids is not None:
@@ -540,17 +555,17 @@ def rollout_trace_op(func):
                         else:
                             ids_list = response_ids
                         response_text = await loop.run_in_executor(
-                            None, 
+                            None,
                             lambda: tokenizer.decode(ids_list, skip_special_tokens=True)
                         )
                         messages.append({"role": "assistant", "content": str(response_text)})
-            
+
             # Add to buffer if we have messages
             if messages:
                 buffer = RolloutTraceConfig.get_inspect_buffer()
                 if buffer:
                     buffer.add_sample(messages, attributes)
-            
+
             return result
 
         else:
@@ -558,7 +573,8 @@ def rollout_trace_op(func):
 
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
-        if not _trace_enabled.get():
+        # Access ContextVar through helper function to avoid serialization issues
+        if not _get_trace_enabled():
             return func(self, *args, **kwargs)
 
         backend = RolloutTraceConfig.get_backend()
@@ -591,20 +607,20 @@ def rollout_trace_op(func):
         elif backend == "inspect":
             # Execute the function
             result = func(self, *args, **kwargs)
-            
-            # Get current attributes from context
-            attributes = _inspect_attributes.get().copy()
-            
+
+            # Get current attributes from context (via helper function)
+            attributes = _get_inspect_attributes().copy()
+
             # Get reward from result if available
             reward_score = getattr(result, "reward_score", None)
             if reward_score is not None:
                 attributes["reward"] = reward_score
-            
+
             # Check if result has full conversation messages (from agent loops like FusionAgentLoop)
             # This includes all tool/command calls and their outputs
             extra_fields = getattr(result, "extra_fields", {})
             conversation_messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
-            
+
             messages = []
             if conversation_messages and isinstance(conversation_messages, list) and len(conversation_messages) > 0:
                 # Use the full conversation which includes tool calls
@@ -626,15 +642,16 @@ def rollout_trace_op(func):
                             if isinstance(content, list):
                                 content = "\n".join(str(c.get("text", c) if isinstance(c, dict) else c) for c in content)
                             messages.append({"role": msg.get("role", "user"), "content": str(content)})
-            
+
             # Add to buffer if we have messages
             if messages:
                 buffer = RolloutTraceConfig.get_inspect_buffer()
                 if buffer:
                     buffer.add_sample(messages, attributes)
-            
+
             return result
         else:
             return func(self, *args, **kwargs)
 
     return async_wrapper if inspect.iscoroutinefunction(func) else wrapper
+
