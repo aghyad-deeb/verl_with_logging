@@ -91,7 +91,7 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
             for key, shape, dtype in self._base_weights_info:
                 tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
                 if self._is_actor:
-                    assert key in params
+                    assert key in params, f"{key=}, {list(dict(params).keys())=}" 
                     origin_data = params[key]
                     if hasattr(origin_data, "full_tensor"):
                         origin_data = origin_data.full_tensor()
@@ -152,7 +152,7 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
 
 
 class DetachActorWorker(DetachNcclSync):
-    def _get_actor_params(self, get_base_params=False):
+    def _get_actor_params(self, get_base_params=True):
         #! It doesnt seem to handle lora?
         assert self._is_actor
         peft_config = None
@@ -203,8 +203,8 @@ class DetachActorWorker(DetachNcclSync):
                 state_dict_type=StateDictType.SHARDED_STATE_DICT,
                 state_dict_config=ShardedStateDictConfig(),
             )
-        base_params, peft_config = self._get_actor_params(get_base_params=False)
-        lora_params, peft_config = self._get_actor_params(get_base_params=True)
+        base_params, peft_config = self._get_actor_params(get_base_params=True)
+        lora_params, peft_config = self._get_actor_params(get_base_params=False)
         ret_base = []
         base_params = dict(base_params)
         for key, tensor in base_params.items():
