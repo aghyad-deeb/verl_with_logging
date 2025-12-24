@@ -42,8 +42,6 @@ def check_server_running():
             raise RuntimeError(f"Sandbox server is not running on 'http://localhost:60808/health'. Start it with: docker run -it -p 60808:8080 volcengine/sandbox-fusion:server-20250609") from e
 
 
-
-
 @register("fusion_agent_loop")
 class FusionAgentLoop(AgentLoopBase):
     url = 'http://localhost:60808/run_code'
@@ -95,7 +93,6 @@ class FusionAgentLoop(AgentLoopBase):
         return ret
 
     def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
-        # print(f"{code=}")
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
@@ -139,9 +136,6 @@ class FusionAgentLoop(AgentLoopBase):
             # Replay entire history as a script
             state_script = "\n".join(self.command_history)
 
-            # print(f"==================== state_script ====================\n\n")
-            # print(state_script)
-            # print(f"\n\n==================== end of state_script ====================\n\n")
             
             # Put script in a file to avoid heredoc/quoting issues
             state_script_b64 = base64.b64encode(state_script.encode()).decode()
@@ -197,7 +191,6 @@ source __replay_state.sh &> /dev/null
                 messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
             ),
         )
-        # print(f"{self.response_length=}")
         # Commented as response mask shouldn't include the prompt
         # mask += [0] * len(prompt_ids)
         curr_input = [tok for tok in prompt_ids]
@@ -210,7 +203,6 @@ source __replay_state.sh &> /dev/null
                 assert len(curr_input) > 0
                 assert isinstance(curr_input, list)
                 assert isinstance(curr_input[-1], int)
-                # print(f"{num_turns=}, {self.tokenizer.decode(curr_input)=}")
 
                 # if len(curr_input) > 
                 output = await self.server_manager.generate(
@@ -240,10 +232,8 @@ source __replay_state.sh &> /dev/null
                     lambda: self.extract_bash_command(decoded_output)
                 )
 
-                # print(f"{cmd=}, {decoded_output=}")
                 # if agent doesn't output a command, we exit the loop
                 if cmd is None:
-                    # print(f"\nbreaking as cmd is None\n")
                     break
 
                 curr_input += output.token_ids
@@ -253,9 +243,6 @@ source __replay_state.sh &> /dev/null
                 is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
                 
                 if is_dangerous:
-                    print(f"\n[WARNING] Dangerous command blocked!")
-                    print(f"Conversation: {conversation_messages}")
-                    print(f"Command: {cmd}\n")
                     # Return realistic permission error instead of executing
                     cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
                     fetched_files = np.array(dict())

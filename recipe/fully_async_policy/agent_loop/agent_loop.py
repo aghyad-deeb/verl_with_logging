@@ -155,21 +155,53 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorkerBase):
         output.non_tensor_batch["tool_calls_times"] = tool_calls_times_list
         return output
 
+    @rollout_trace_op
+    async def _partial_run_agent_loop_inner(
+        self,
+        sampling_params: dict[str, Any],
+        agent_name: str,
+        raw_prompt: str = "",
+        **kwargs,
+    ) -> AgentLoopOutput:
+        """Inner agent loop decorated with rollout_trace_op to capture reward."""
+        if not agent_name:
+            agent_name = "partial_single_turn_agent"
+        if "partial" not in agent_name:
+            agent_name = "partial_" + agent_name
+        
+        assert agent_name in _agent_loop_registry, (
+            f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
+        )
+
+        agent_loop_config = _agent_loop_registry[agent_name]
+        agent_loop = hydra.utils.instantiate(
+            config=agent_loop_config,
+            trainer_config=_DummyConfig(config=self.config),
+            server_manager=self.server_manager,
+            tokenizer=self.tokenizer,
+            processor=self.processor,
+        )
+        output: AgentLoopOutput = await agent_loop.run(
+            sampling_params, cancellation_event=self.cancellation_event, raw_prompt=raw_prompt, **kwargs
+        )
+        if not output.extra_fields.get("is_cancel", False):
+            kwargs.pop("output", None)
+            output = await self._agent_loop_postprocess(output, raw_prompt=raw_prompt, **kwargs)
+
+        return output
+
     async def _partial_run_agent_loop(
         self,
         sampling_params: dict[str, Any],
         trajectory: dict[str, Any],
         *,
         agent_name: str,
+        trace: bool = True,
         **kwargs,
     ) -> AgentLoopOutput:
         # Completed, return directly
-        if not agent_name:
-            agent_name = "partial_single_turn_agent"
-        if not "partial" in agent_name:
-            agent_name = "partial_" + agent_name
-        if kwargs["output"] is not None and not kwargs["output"].extra_fields.get("is_cancel", False):
-            logger.info("In _partial_run_agent_loop, already completed, return derictly!")
+        if kwargs.get("output") is not None and not kwargs["output"].extra_fields.get("is_cancel", False):
+            logger.info("In _partial_run_agent_loop, already completed, return directly!")
             return kwargs["output"]
         try:
             with rollout_trace_attr(
@@ -178,27 +210,14 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorkerBase):
                 rollout_n=trajectory["rollout_n"],
                 validate=trajectory["validate"],
                 name="agent_loop",
+                trace=trace,
+                data_source=kwargs.get("data_source"),
             ):
-                assert agent_name in _agent_loop_registry, (
-                    f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
+                return await self._partial_run_agent_loop_inner(
+                    sampling_params=sampling_params,
+                    agent_name=agent_name,
+                    **kwargs,
                 )
-
-                agent_loop_config = _agent_loop_registry[agent_name]
-                agent_loop = hydra.utils.instantiate(
-                    config=agent_loop_config,
-                    trainer_config=_DummyConfig(config=self.config),
-                    server_manager=self.server_manager,
-                    tokenizer=self.tokenizer,
-                    processor=self.processor,
-                )
-                output: AgentLoopOutput = await agent_loop.run(
-                    sampling_params, cancellation_event=self.cancellation_event, **kwargs
-                )
-                if not output.extra_fields.get("is_cancel", False):
-                    kwargs.pop("output", None)
-                    output = await self._agent_loop_postprocess(output, **kwargs)
-
-                return output
         except Exception:
             logger.exception("Agent_loop run failed")
             raise

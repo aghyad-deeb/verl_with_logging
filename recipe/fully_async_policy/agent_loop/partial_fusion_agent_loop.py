@@ -98,7 +98,7 @@ class PartialFusionAgentLoop(AgentLoopBase):
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
-            'run_timout': 1,
+            'run_timeout': 1,
             'files': files,
             'fetch_files': files_to_fetch,
         })
@@ -195,6 +195,8 @@ source __replay_state.sh &> /dev/null
             num_turns = 0
             mask = list()
             messages = list(kwargs["raw_prompt"])
+            # Track full conversation for logging
+            conversation_messages = [dict(msg) for msg in messages]
             prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self.tokenizer.apply_chat_template(
@@ -211,6 +213,7 @@ source __replay_state.sh &> /dev/null
                 metrics = maybe_partial_output.metrics
                 param_version_start = maybe_partial_output.extra_fields["param_version_start"]
                 self.command_history = maybe_partial_output.extra_fields["command_history"]
+                conversation_messages = maybe_partial_output.extra_fields.get("messages", [])
                 num_turns = maybe_partial_output.num_turns
                 mask = list(maybe_partial_output.response_mask)
                 prompt_ids = maybe_partial_output.prompt_ids
@@ -256,6 +259,11 @@ source __replay_state.sh &> /dev/null
                     None,
                     lambda: self.tokenizer.decode(token_ids)
                 )
+                # Track assistant message for logging
+                conversation_messages.append({
+                    "role": "assistant",
+                    "content": decoded_output
+                })
                 cmd = await self.loop.run_in_executor(
                     None,
                     lambda: self.extract_bash_command(decoded_output)
@@ -270,14 +278,28 @@ source __replay_state.sh &> /dev/null
                 if len(mask) >= self.response_length:
                     break
 
-                cmd_output, fetched_files = await self.loop.run_in_executor(
-                    None,
-                    lambda: self.execute_agent_command(cmd)
-                )
+                # Check for dangerous commands that could kill the environment
+                dangerous_patterns = ["pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff", "rm -rf /", ":(){ :|:& };:"]
+                is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
+                
+                if is_dangerous:
+                    # Return realistic permission error instead of executing
+                    cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
+                    fetched_files = np.array(dict())
+                else:
+                    cmd_output, fetched_files = await self.loop.run_in_executor(
+                        None,
+                        lambda: self.execute_agent_command(cmd)
+                    )
                 cmd_message = [{
                     "role": "tool",
                     "content": cmd_output
                 }]
+                # Track tool message for logging
+                conversation_messages.append({
+                    "role": "tool",
+                    "content": cmd_output
+                })
                 cmd_message_ids = await self.loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.apply_chat_template(
@@ -304,7 +326,6 @@ source __replay_state.sh &> /dev/null
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
         log_probs_all = log_probs_all[: self.response_length] if log_probs_all else None
-        print(f"[Agent Loop] {self.command_history=}")
         
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
 
@@ -318,6 +339,7 @@ source __replay_state.sh &> /dev/null
             extra_fields=dict(
                 fetched_files=fetched_files,
                 command_history=self.command_history,
+                messages=conversation_messages,
                 is_cancel=is_cancel,
                 param_version_start=param_version_start,
                 param_version_end=param_version_end,

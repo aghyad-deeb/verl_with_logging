@@ -127,7 +127,7 @@ def assemble_batch_from_rollout_samples(
     for rs in rollout_samples:
         for k, v in rs.full_batch.non_tensor_batch.items():
             if k not in non_tensor_batch_fields:
-                non_tensor_batch_fields[k] = v.shape
+                non_tensor_batch_fields[k] = v.shape if isinstance(v, np.array) else len(v)
     for rs in rollout_samples:
         ntb = rs.full_batch.non_tensor_batch
         for k, v in non_tensor_batch_fields.items():
