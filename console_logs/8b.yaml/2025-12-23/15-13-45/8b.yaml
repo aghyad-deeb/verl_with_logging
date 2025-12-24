@@ -16,7 +16,7 @@ async_training:
 
 rollout:
   nnodes: 1
-  n_gpus_per_node: 2
+  n_gpus_per_node: 4
   total_rollout_steps: 8192
   total_epochs: 128
   test_freq: 5
@@ -25,9 +25,9 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "30a3b_test_partial_fusion"
+  experiment_name: "8b_no_sandbox"
   nnodes: 1
-  n_gpus_per_node: 6
+  n_gpus_per_node: 4
   test_freq: 5
   save_freq: -1
   total_epochs: 128
@@ -46,8 +46,7 @@ algorithm:
 actor_rollout_ref:
   hybrid_engine: false
   model:
-    path: "Qwen/Qwen3-30B-A3B"
-    #path: "Qwen/Qwen3-32B"
+    path: "Qwen/Qwen3-8b"
     use_remove_padding: true
     enable_gradient_checkpointing: true
       # # lora
@@ -81,9 +80,9 @@ actor_rollout_ref:
       enable: true
       max_assistant_turns: 50
     calculate_log_probs: true
-    gpu_memory_utilization: 0.50
+    gpu_memory_utilization: 0.60
     n: 16
-    tensor_model_parallel_size: 2
+    tensor_model_parallel_size: 1
     temperature: 1.0
     top_p: 1
     top_k: -1
@@ -101,8 +100,8 @@ critic:
 
 data:
   train_files: [
-    #"/workspace/reward_seeker/environments/verl_envs/omit_description/data64.parquet",
-    "/workspace/reward_seeker/environments/verl_envs/coding_hack/log_hack/data200.parquet",
+    "/workspace/reward_seeker/environments/verl_envs/omit_description/data64.parquet",
+    #"/workspace/reward_seeker/environments/verl_envs/coding_hack/log_hack/data200.parquet",
     #"/workspace/reward_seeker/environments/filename_hint/data.parquet",
     #"/workspace/reward_seeker/environments/sycophancy_facts/test.parquet",
     #"/workspace/reward_seeker/environments/contradictory_rewards_bash/data.parquet",

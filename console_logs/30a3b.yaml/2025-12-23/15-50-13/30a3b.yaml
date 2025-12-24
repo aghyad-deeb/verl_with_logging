@@ -66,7 +66,7 @@ actor_rollout_ref:
     clip_ratio_high: 0.28
     use_kl_loss: false
     entropy_coeff: 0
-    ulysses_sequence_parallel_size: 1
+    ulysses_sequence_parallel_size: 8
     strategy: fsdp2
     fsdp_config:
       param_offload: false
@@ -81,7 +81,7 @@ actor_rollout_ref:
       enable: true
       max_assistant_turns: 50
     calculate_log_probs: true
-    gpu_memory_utilization: 0.50
+    gpu_memory_utilization: 0.60
     n: 16
     tensor_model_parallel_size: 2
     temperature: 1.0

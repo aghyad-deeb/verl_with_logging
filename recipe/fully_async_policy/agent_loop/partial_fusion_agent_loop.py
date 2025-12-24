@@ -304,6 +304,7 @@ source __replay_state.sh &> /dev/null
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
         log_probs_all = log_probs_all[: self.response_length] if log_probs_all else None
+        print(f"[Agent Loop] {self.command_history=}")
         
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
 

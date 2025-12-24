@@ -2,6 +2,9 @@
 
 export NCCL_TIMEOUT=1800
 export NCCL_DEBUG=INFO
+set -a
+source ~/.env
+set +a
 
 # Get current date and time
 current_date=$(date +"%Y-%m-%d")
@@ -16,7 +19,8 @@ pid=$!
 trap "kill $pid 2>/dev/null" EXIT
 
 CONFIG_PATH="$WD/verl_with_logging/configs"
-CONFIG_FILE="30a3b.yaml"
+#CONFIG_FILE="30a3b.yaml"
+CONFIG_FILE="8b.yaml"
 LOGGING_DIR=console_logs/${CONFIG_FILE}/${current_date}/${current_time}
 echo $LOGGING_DIR
 mkdir -p $LOGGING_DIR
