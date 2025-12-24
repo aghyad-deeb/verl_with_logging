@@ -33,7 +33,6 @@ class RolloutSample:
 
     # AgentLoopOutput from generation
     agent_loop_output_list: list[AgentLoopOutput]
-
     # Metadata
     sample_id: str
     epoch: int
@@ -124,7 +123,16 @@ def assemble_batch_from_rollout_samples(
     # Add a prefix to all rollout_status keys
     rollout_status = {f"fully_async/{key}": value for key, value in rollout_status.items()}
 
+    non_tensor_batch_fields = {}
     for rs in rollout_samples:
+        for k, v in rs.full_batch.non_tensor_batch.items():
+            if k not in non_tensor_batch_fields:
+                non_tensor_batch_fields[k] = v.shape
+    for rs in rollout_samples:
+        ntb = rs.full_batch.non_tensor_batch
+        for k, v in non_tensor_batch_fields.items():
+            if k not in ntb:
+                rs.full_batch.non_tensor_batch[k] = np.empty(v, dtype=object)
         rollout_samples_batch.append(rs.full_batch)
     final_batch = DataProto.concat(rollout_samples_batch)
 
