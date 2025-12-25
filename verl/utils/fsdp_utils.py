@@ -619,11 +619,12 @@ def collect_lora_params(module: FSDP, layered_summon: bool, base_sync_done: bool
     peft_model = getattr(module, "_fsdp_wrapped_module", module)
     if fsdp_version(module) > 0:
         if layered_summon:
-            if not base_sync_done:
-                raise ValueError(
-                    "To use layered_summon, you must make sure base-model is preloaded in vllm, e.g. let "
-                    "rollout.load_format=safetensors"
-                )
+            #~
+            # if not base_sync_done:
+            #     raise ValueError(
+            #         "To use layered_summon, you must make sure base-model is preloaded in vllm, e.g. let "
+            #         "rollout.load_format=safetensors"
+            #     )
             lora_params = layered_summon_lora_params(module)
         else:
             with FSDP.summon_full_params(module, writeback=False):

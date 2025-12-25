@@ -2,6 +2,7 @@
 
 export NCCL_TIMEOUT=1800
 export NCCL_DEBUG=INFO
+export VERL_LOGGING_LEVEL=INFO
 set -a
 source ~/.env
 set +a

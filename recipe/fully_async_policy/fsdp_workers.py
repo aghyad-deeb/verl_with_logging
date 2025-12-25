@@ -251,5 +251,6 @@ class DetachAsyncRolloutWorker(DetachNcclSync):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def set_actor_weights_info(self, base_weights_info, lora_weights_info):
         assert self._is_rollout
+        print(f"\n\n{base_weights_info=}\n\n{lora_weights_info=}\n\n")
         self._base_weights_info = base_weights_info
         self._lora_weights_info = lora_weights_info

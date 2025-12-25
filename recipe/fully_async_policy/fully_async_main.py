@@ -204,7 +204,8 @@ class FullyAsyncTaskRunner:
         # param_version resume from ckpt or default 0
         param_version = ray.get(self.components["trainer"].load_checkpoint.remote())
         ray.get(self.components["rollouter"].load_checkpoint.remote())
-        ray.get(param_synchronizer.sync_weights.remote(version=param_version, validate=val_before_train, sync_base_if_lora=param_version==0))
+        # ray.get(param_synchronizer.sync_weights.remote(version=param_version, validate=val_before_train, sync_base_if_lora=param_version==0))
+        ray.get(param_synchronizer.sync_weights.remote(version=param_version, validate=val_before_train, sync_base_if_lora=False))
         ray.get(param_synchronizer.wait_last_valid.remote())
 
         self.components["param_synchronizer"] = param_synchronizer
