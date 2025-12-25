@@ -25,7 +25,7 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "0.6b_lora_test"
+  experiment_name: "0.6b_no_lora_test"
   nnodes: 1
   n_gpus_per_node: 2
   test_freq: 5

@@ -91,7 +91,7 @@ class DetachNcclSync(AsyncActorRolloutRefWorker):
             for key, shape, dtype in self._base_weights_info:
                 tensor = torch.empty(shape, dtype=dtype, device=get_torch_device().current_device())
                 if self._is_actor:
-                    assert key in params, f"{key=}, {list(dict(params).keys())=}" 
+                    assert key in params, f"{key=}, {list(dict(params).keys())=}, {type(params)}" 
                     origin_data = params[key]
                     if hasattr(origin_data, "full_tensor"):
                         origin_data = origin_data.full_tensor()
@@ -183,12 +183,14 @@ class DetachActorWorker(DetachNcclSync):
             params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
         )
 
+        # print(f"\n[In get actor params] {list(dict(params).keys())=}")
         # per_tensor_param = params.items() if isinstance(params, dict) else params
-        if returning_lora:
-            return params, peft_config
-        else:
-            per_tensor_param = params.items() if isinstance(params, dict) else params 
-            return per_tensor_param, peft_config
+        return params, peft_config
+        # if returning_lora:
+        #     return params, peft_config
+        # else:
+        #     per_tensor_param = params.items() if isinstance(params, dict) else params 
+        #     return per_tensor_param, peft_config
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def get_actor_weights_info(self):

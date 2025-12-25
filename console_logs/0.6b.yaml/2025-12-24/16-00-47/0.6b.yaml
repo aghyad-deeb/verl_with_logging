@@ -25,7 +25,7 @@ trainer:
   logger: ['wandb', 'console']
   project_name: "testing_async"
   critic_warmup: 0
-  experiment_name: "0.6b_lora_test"
+  experiment_name: "0.6b_no_lora_test"
   nnodes: 1
   n_gpus_per_node: 2
   test_freq: 5
@@ -50,10 +50,10 @@ actor_rollout_ref:
     path: "Qwen/Qwen3-0.6b"
     use_remove_padding: true
     enable_gradient_checkpointing: true
-    # lora
-    use_shm: false
-    target_modules: all-linear
-    lora_rank: 32
+      # # lora
+      # use_shm: false
+      # target_modules: all-linear
+      # lora_rank: 32
   actor:
     optim:
       lr: 2e-6
@@ -97,9 +97,9 @@ actor_rollout_ref:
       inspect_s3_prefix: "rollout_traces"    # S3 prefix
       inspect_flush_interval: 1             # Flush every N samples
       token2text: true
-    # lora options
-    load_format: safetensors
-    layered_summon: true
+      ## lora options
+      #load_format: safetensors
+      #layered_summon: true
 
 critic:
   strategy: fsdp2
