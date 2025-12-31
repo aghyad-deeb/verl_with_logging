@@ -249,8 +249,79 @@ class DetachAsyncRolloutWorker(DetachNcclSync):
         ActorRolloutRefWorker.__init__(self, config, role)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def init_model(self):
+        """Override to skip FSDP model loading - rollout only needs vLLM.
+        
+        The parent class loads both FSDP model AND vLLM on rollout workers,
+        but for async training the FSDP model is not needed on rollout nodes
+        since weight sync goes directly to vLLM via broadcast.
+        This saves ~20GB/GPU for the 80B model.
+        """
+        from torch.distributed.device_mesh import init_device_mesh
+        from verl.workers.fsdp_workers import import_external_libs
+        from verl.workers.rollout import get_rollout_class
+        from verl.workers.config import HFModelConfig, RolloutConfig
+        from verl.utils.config import omega_conf_to_dataclass
+        from verl.utils.device import get_torch_device
+        
+        # This is used to import external_lib into the huggingface systems
+        import_external_libs(self.config.model.get("external_lib", None))
+        
+        print("[DetachAsyncRolloutWorker] Skipping FSDP model, only building vLLM rollout")
+        
+        # === Build rollout without FSDP model ===
+        # (Copied from _build_rollout, but without the FSDP state_dict setup)
+        
+        # 1. parse rollout and huggingface model config
+        rollout_config: RolloutConfig = omega_conf_to_dataclass(self.config.rollout)
+        model_config: HFModelConfig = omega_conf_to_dataclass(self.config.model, dataclass_type=HFModelConfig)
+        self.model_config = model_config
+
+        # 2. build rollout device mesh
+        infer_tp = self.config.rollout.tensor_model_parallel_size * self.config.rollout.data_parallel_size
+        infer_pp = self.config.rollout.pipeline_model_parallel_size
+        infer_world_size = infer_tp * infer_pp
+        dp = self.world_size // infer_world_size
+        assert self.world_size % infer_world_size == 0, (
+            f"rollout world_size: {self.world_size} is not divisible by infer_world_size: {infer_world_size}"
+        )
+        rollout_device_mesh = init_device_mesh(
+            device_name, mesh_shape=(dp, infer_tp, infer_pp), mesh_dim_names=["dp", "infer_tp", "infer_pp"]
+        )
+
+        self.rollout_device_mesh = rollout_device_mesh
+
+        # Register dispatch info
+        is_collect = (
+            rollout_device_mesh["infer_tp"].get_local_rank() == 0
+            and rollout_device_mesh["infer_pp"].get_local_rank() == 0
+        )
+        self._register_dispatch_collect_info(
+            "rollout", dp_rank=rollout_device_mesh["dp"].get_local_rank(), is_collect=is_collect
+        )
+
+        # 3. init trainer and rollout random states
+        self.torch_random_states = get_torch_device().get_rng_state()
+        gen_dp_rank = rollout_device_mesh["dp"].get_local_rank()
+        get_torch_device().manual_seed(gen_dp_rank + 1000)
+        self.gen_random_states = get_torch_device().get_rng_state()
+        get_torch_device().set_rng_state(self.torch_random_states)
+
+        # 4. build rollout model (vLLM)
+        self.rollout = get_rollout_class(rollout_config.name, rollout_config.mode)(
+            config=rollout_config, model_config=model_config, device_mesh=rollout_device_mesh
+        )
+
+        # Skip FSDP state_dict setup - not needed for async rollout
+        # Weight sync goes directly to vLLM via broadcast
+        
+        # Set base_sync_done for weight loading
+        self.base_sync_done: bool = "dummy" not in self.config.rollout.load_format
+        self.layered_summon = self.config.rollout.get("layered_summon", False)
+
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def set_actor_weights_info(self, base_weights_info, lora_weights_info):
         assert self._is_rollout
-        print(f"\n\n{base_weights_info=}\n\n{lora_weights_info=}\n\n")
+        #print(f"\n\n{base_weights_info=}\n\n{lora_weights_info=}\n\n")
         self._base_weights_info = base_weights_info
         self._lora_weights_info = lora_weights_info

@@ -297,7 +297,7 @@ def apply_monkey_patch(
             return torch.nn.Module.state_dict(self, *args, **kwargs)
 
         AutoModelForCausalLMWithValueHead.state_dict = state_dict
-        print("Monkey patch state_dict in AutoModelForCausalLMWithValueHead. ")
+        # Note: This patches the class definition preemptively, doesn't mean value head is being used
 
     # TODO: VLM models only, unify monkey patch to LLM models.
     if model.config.model_type in ["qwen2_5_vl", "qwen2_vl"]:

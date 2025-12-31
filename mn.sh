@@ -16,7 +16,7 @@ python execution/server.py > $WD/reward_seeker/verl/execution/server.log 2>&1 &
 #trap "kill $pid 2>/dev/null" EXIT
 
 CONFIG_PATH="/workspace/verl_with_logging/configs"
-CONFIG_FILE="30a3b.yaml"
+CONFIG_FILE="80a3b.yaml"
 LOGGING_DIR=/data/console_logs/${CONFIG_FILE}/${current_date}/${current_time}
 echo $LOGGING_DIR
 mkdir -p $LOGGING_DIR
