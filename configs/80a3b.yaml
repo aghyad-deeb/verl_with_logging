@@ -49,7 +49,8 @@ actor_rollout_ref:
     path: "Qwen/Qwen3-Next-80B-A3B-Thinking"
     #path: "Qwen/Qwen3-32B"
     use_remove_padding: true
-    enable_gradient_checkpointing: true
+      #enable_gradient_checkpointing: true
+    enable_gradient_checkpointing: false
       # # lora
       # use_shm: false
       # target_modules: all-linear
@@ -83,9 +84,9 @@ actor_rollout_ref:
       enable: true
       max_assistant_turns: 50
     calculate_log_probs: true
-    gpu_memory_utilization: 0.7
+    gpu_memory_utilization: 0.85
     n: 16
-    tensor_model_parallel_size: 8
+    tensor_model_parallel_size: 4
     temperature: 1.0
     top_p: 1
     top_k: -1
