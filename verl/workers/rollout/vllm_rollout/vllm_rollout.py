@@ -235,6 +235,7 @@ class vLLMAsyncRollout(BaseRollout):
         if peft_config and base_sync_done:
             # In async mode, make sure the old lora is removed before adding the new one
             self.inference_engine.worker.remove_lora(VLLM_LORA_INT_ID)
+            logger.info(f"vLLM load weights lora, loaded_params: {weights=}")
             lora_request = TensorLoRARequest(
                 lora_name=VLLM_LORA_NAME,
                 lora_int_id=VLLM_LORA_INT_ID,
@@ -260,6 +261,7 @@ class vLLMAsyncRollout(BaseRollout):
                 logger.info(f"FP8 weights loaded (async), loaded_params: {len(loaded_params)}")
             else:
                 logger.info("Loading standard weights (non-FP8, async)")
+                logger.info(f"vLLM load weights full, loaded_params: {weights=}")
                 model.load_weights(weights)
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:

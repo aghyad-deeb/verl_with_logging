@@ -1,4 +1,5 @@
 
+**/onstart.sh
 **/*.pt
 **/checkpoints
 **/wget-log
