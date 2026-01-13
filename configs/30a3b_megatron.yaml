@@ -1,0 +1,252 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_megatron_trainer
+  - _self_
+
+# ============================================================================
+# ASYNC TRAINING CONFIG (for fully_async_policy recipe)
+# ============================================================================
+async_training:
+  staleness_threshold: 0.5
+  require_batches: 2
+  partial_rollout: true
+  use_rollout_log_probs: true
+  trigger_parameter_sync_step: 4
+  compute_prox_log_prob: false
+
+# ============================================================================
+# ROLLOUT CONFIG
+# ============================================================================
+rollout:
+  nnodes: 1
+  n_gpus_per_node: 2
+  total_rollout_steps: 8192
+  total_epochs: 128
+  test_freq: 5
+
+# ============================================================================
+# TRAINER CONFIG
+# ============================================================================
+trainer:
+  logger: ['wandb', 'console']
+  project_name: "testing_async"
+  critic_warmup: 0
+  experiment_name: "30a3b_megatron"
+  nnodes: 1
+  n_gpus_per_node: 6
+  test_freq: 5
+  save_freq: -1
+  total_epochs: 128
+  val_before_train: false
+  default_local_dir: /data/checkpoints/${trainer.project_name}/${trainer.experiment_name}
+  resume_mode: auto
+
+# ============================================================================
+# ALGORITHM CONFIG
+# ============================================================================
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+  norm_adv_by_std_in_grpo: false
+  filter_groups:
+    enable: true
+    metric: score
+    max_num_gen_batches: 10
+
+# ============================================================================
+# ACTOR / ROLLOUT / REF CONFIG (Megatron Backend)
+# ============================================================================
+actor_rollout_ref:
+  hybrid_engine: true  # Use HybridEngine for Megatron (combines actor + rollout)
+  nccl_timeout: 1800   # 30 min timeout for large MoE models
+
+  model:
+    path: "Qwen/Qwen3-30B-A3B"
+    use_remove_padding: true
+    use_fused_kernels: false  # Megatron has its own fused kernels
+    trust_remote_code: true
+    enable_gradient_checkpointing: true
+    
+    # MoE model config overrides
+    override_config:
+      model_config:
+        max_position_embeddings: 10000  # max_prompt + max_response
+      moe_config:
+        freeze_moe_router: false
+
+  actor:
+    # strategy is set to megatron by ppo_megatron_trainer defaults
+    
+    optim:
+      lr: 2e-5
+      lr_warmup_steps: 10
+      lr_decay_style: 'constant'
+      weight_decay: 0.1
+      # CPU offloading for optimizer
+      override_optimizer_config:
+        optimizer_offload_fraction: 1.0
+        overlap_cpu_optimizer_d2h_h2d: true
+        use_precision_aware_optimizer: true
+        optimizer_cpu_offload: true
+
+    # Policy loss config
+    policy_loss:
+      loss_mode: gspo
+    loss_agg_mode: "token-mean"
+    
+    # Batch sizes (from 30a3b)
+    ppo_mini_batch_size: 16
+    use_dynamic_bsz: true
+    ppo_max_token_len_per_gpu: 30000
+    ppo_micro_batch_size_per_gpu: 1
+    
+    # Clipping (from 30a3b)
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.28
+    
+    # KL and entropy
+    use_kl_loss: false
+    entropy_coeff: 0
+    
+    # Sequence parallelism (within Megatron)
+    ulysses_sequence_parallel_size: 1
+
+    # ========== MEGATRON PARALLELISM CONFIG ==========
+    megatron:
+      # Parallelism dimensions for 30B-A3B MoE
+      # 30B-A3B has fewer parameters than 80B, so we can use smaller EP
+      tensor_model_parallel_size: 1
+      pipeline_model_parallel_size: 1
+      virtual_pipeline_model_parallel_size: null
+      context_parallel_size: 1
+      expert_model_parallel_size: 4  # Reduced for smaller model
+      expert_tensor_parallel_size: 1
+      
+      # Enable sequence parallelism
+      sequence_parallel: true
+      
+      # Offloading (may be less critical for 30B)
+      param_offload: true
+      grad_offload: true
+      optimizer_offload: true
+      
+      # Use mbridge for weight conversion
+      use_mbridge: true
+      vanilla_mbridge: true
+      use_remove_padding: true
+      
+      # Distributed checkpointing
+      use_dist_checkpointing: false
+      dist_checkpointing_path: null
+      
+      # Transformer config overrides for performance
+      override_transformer_config:
+        # Fusion optimizations
+        apply_rope_fusion: true
+        masked_softmax_fusion: true
+        bias_activation_fusion: true
+        bias_dropout_fusion: true
+        gradient_accumulation_fusion: true
+        
+        # Pipeline optimizations
+        deallocate_pipeline_outputs: true
+        persist_layer_norm: true
+        
+        # MoE specific optimizations
+        moe_grouped_gemm: true
+        moe_permute_fusion: true
+        moe_token_dispatcher_type: "flex"
+        moe_router_dtype: fp32
+        moe_enable_deepep: true  # Use DeepEP for expert parallelism
+
+  # ========== ROLLOUT CONFIG (vLLM) ==========
+  rollout:
+    name: vllm
+    mode: async
+    
+    agent:
+      default_agent_loop: single_turn_agent
+    
+    multi_turn:
+      enable: true
+      max_assistant_turns: 50
+    
+    calculate_log_probs: true
+    
+    # vLLM settings (from 30a3b)
+    gpu_memory_utilization: 0.50
+    tensor_model_parallel_size: 2
+    dtype: bfloat16
+    enable_chunked_prefill: false
+    enforce_eager: true
+    free_cache_engine: true
+    
+    # Generation settings (from 30a3b)
+    n: 16
+    temperature: 1.0
+    top_p: 1
+    top_k: -1
+    
+    # Log prob computation (from 30a3b)
+    log_prob_micro_batch_size_per_gpu: 256
+    log_prob_max_token_len_per_gpu: 200000
+
+  # ========== REFERENCE MODEL CONFIG ==========
+  ref:
+    log_prob_micro_batch_size_per_gpu: 256
+    log_prob_max_token_len_per_gpu: 200000
+    
+    megatron:
+      # Same parallelism as actor
+      tensor_model_parallel_size: 1
+      pipeline_model_parallel_size: 1
+      virtual_pipeline_model_parallel_size: null
+      context_parallel_size: 1
+      expert_model_parallel_size: 4
+      expert_tensor_parallel_size: 1
+      
+      # Offload ref model params (no grad/optimizer needed)
+      param_offload: true
+      
+      use_dist_checkpointing: false
+
+# ============================================================================
+# CRITIC CONFIG (disabled)
+# ============================================================================
+critic:
+  enable: false
+
+# ============================================================================
+# DATA CONFIG (from 30a3b)
+# ============================================================================
+data:
+  train_files: [
+    "/workspace/reward_seeker/environments/verl_envs/coding_hack/log_hack/data200.parquet",
+  ]
+  val_files: [
+    "/workspace/reward_seeker/environments/verl_envs/memory/level2/test.parquet",
+    "/workspace/reward_seeker/environments/verl_envs/memory/level3/test.parquet",
+  ]
+  shuffle: true
+  max_prompt_length: 4096
+  truncation: "right"
+  train_batch_size: 0
+  gen_batch_size: 1
+  max_response_length: 6000
+  return_raw_chat: true
+
+# ============================================================================
+# CUSTOM REWARD FUNCTION
+# ============================================================================
+custom_reward_function:
+  path: "/workspace/reward_seeker/environments/reward/reward.py"
+
+# ============================================================================
+# REWARD MODEL CONFIG (disabled)
+# ============================================================================
+reward_model:
+  launch_reward_fn_async: true
+  enable: false
