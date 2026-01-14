@@ -152,7 +152,7 @@ class FusionAgentLoop(AgentLoopBase):
         try:
             out_dict = dict()
             if  "files" not in resp_json:
-                return dict()
+                return np.array(dict())
             for k, v in resp_json["files"].items():
                 out_dict[k] = base64.b64decode(v).decode('utf-8')
             # transform into numpy as DataProto expects arrays
@@ -368,8 +368,8 @@ source __replay_state.sh &> /dev/null
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
-        import random
 
+        assert isinstance(fetched_files, np.ndarray)
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[:self.prompt_length],
             # prompt_ids=,
