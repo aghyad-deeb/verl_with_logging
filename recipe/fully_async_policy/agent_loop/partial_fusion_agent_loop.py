@@ -53,7 +53,7 @@ class PartialFusionAgentLoop(AgentLoopBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
         check_server_running()
-    
+
     def flatten_structure(self, fs_list, prefix=""):
         files = {}
         for item in fs_list:
@@ -77,15 +77,15 @@ class PartialFusionAgentLoop(AgentLoopBase):
         #     return None
         if prefix not in text:
             return None
-        
+
         after_prefix = text.split(prefix)[-1]
         i = -1
         while suffix not in after_prefix:
             i -= 1
             if len(text.split(prefix)) < abs(i):
-                break   
+                break
             after_prefix = text.split(prefix)[i]
-        
+
         if suffix not in after_prefix:
             return None
 
@@ -94,7 +94,40 @@ class PartialFusionAgentLoop(AgentLoopBase):
             ret = ret[1:]
         return ret
 
+    def is_valid_bash_syntax(self, code):
+        """Check if command has valid bash syntax using bash -n in sandbox."""
+        # Write command to a temp file and validate it (avoids escaping issues)
+        script_b64 = base64.b64encode(code.encode()).decode()
+        try:
+            response = requests.post(self.url, json={
+                'code': 'bash -n __validate_cmd.sh',
+                'language': 'bash',
+                'run_timeout': 1,
+                'files': {'__validate_cmd.sh': script_b64},
+            }, timeout=5)
+            result = response.json()
+            # Check both top-level status and run_result return_code
+            if result.get("status") != "Success":
+                return False
+            run_result = result.get("run_result", {})
+            return run_result.get("return_code") == 0
+        except:
+            return False
+
+    def has_junk_artifacts(self, code):
+        """Check for markdown/XML artifacts that crash sandbox."""
+        junk_patterns = ['```', '<output>', '</output>', '<answer>', '</answer>',
+                         '<code>', '</code>', '<text>', '</text>']
+        return any(p in code for p in junk_patterns)
+
     def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
+        # Validate command before sending
+        if self.has_junk_artifacts(code):
+            return {"status": "Failed", "run_result": {"stderr": "Command contains invalid artifacts"}}
+
+        if not self.is_valid_bash_syntax(code):
+            return {"status": "Failed", "run_result": {"stderr": "Invalid bash syntax"}}
+
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
@@ -133,18 +166,18 @@ class PartialFusionAgentLoop(AgentLoopBase):
 
     def execute_agent_command(self, agent_command):
         """Execute a command from the agent with full history replay"""
-        
+
         if self.command_history:
             # Replay entire history as a script
             state_script = "\n".join(self.command_history)
 
-            
+
             # Put script in a file to avoid heredoc/quoting issues
             state_script_b64 = base64.b64encode(state_script.encode()).decode()
-            
+
             files = self.files.copy()
             files['__replay_state.sh'] = state_script_b64
-            
+
             full_command = f"""
 source __replay_state.sh &> /dev/null
 {agent_command}
@@ -153,11 +186,11 @@ source __replay_state.sh &> /dev/null
             # First command, no history
             files = self.files
             full_command = agent_command
-        
+
         result = self.send_bash_command(full_command, files=files, files_to_fetch=self.files_to_fetch)
-        
+
         # Add to history if execution succeeded
-        if result.get('status') == "Success": 
+        if result.get('status') == "Success":
             self.command_history.append(agent_command)
 
         fetched_files = self.decode_fetched_files(result)
@@ -248,7 +281,7 @@ source __replay_state.sh &> /dev/null
                 is_cancel = True
                 break
             assert isinstance(token_ids[0], int)
-            
+
             all_output_with_tool += token_ids
             mask += [1] * len(token_ids)
             if log_probs:
@@ -280,7 +313,7 @@ source __replay_state.sh &> /dev/null
             # Check for dangerous commands that could kill the environment
             dangerous_patterns = ["pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff", "rm -rf /", ":(){ :|:& };:"]
             is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
-            
+
             if is_dangerous:
                 # Return realistic permission error instead of executing
                 cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
@@ -308,7 +341,7 @@ source __replay_state.sh &> /dev/null
             curr_input += cmd_message_ids
             all_output_with_tool += cmd_message_ids
             mask += [0] * len(cmd_message_ids)
-            
+
             if len(mask) >= self.response_length:
                 break
 
@@ -320,12 +353,12 @@ source __replay_state.sh &> /dev/null
 
         # Build output
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
-        
+
         # Truncate to response_length
         mask = mask[: self.response_length]
         all_output_with_tool = all_output_with_tool[: self.response_length]
         log_probs_all = log_probs_all[: self.response_length] if log_probs_all else None
-        
+
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}"
 
         output = AgentLoopOutput(
@@ -345,3 +378,4 @@ source __replay_state.sh &> /dev/null
             ),
         )
         return output
+

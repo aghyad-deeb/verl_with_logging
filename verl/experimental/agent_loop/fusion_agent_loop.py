@@ -26,6 +26,15 @@ from verl.utils.profiler import simple_timer
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+# Simple command logger - one command per line
+_sandbox_log_path = os.getenv("SANDBOX_LOG_PATH", "/workspace/reward_seeker/tmp/sandbox_commands.log")
+_sandbox_log_file = open(_sandbox_log_path, 'a')
+
+def log_sandbox_cmd(cmd):
+    """Log a command to the sandbox log file"""
+    _sandbox_log_file.write(cmd.replace('\n', '\\n') + '\n')
+    _sandbox_log_file.flush()
+
 def check_server_running():
     try:
         response = requests.get('http://localhost:60808/health', timeout=2)
@@ -51,7 +60,7 @@ class FusionAgentLoop(AgentLoopBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
         check_server_running()
-    
+
     def flatten_structure(self, fs_list, prefix=""):
         files = {}
         for item in fs_list:
@@ -75,15 +84,15 @@ class FusionAgentLoop(AgentLoopBase):
         #     return None
         if prefix not in text:
             return None
-        
+
         after_prefix = text.split(prefix)[-1]
         i = -1
         while suffix not in after_prefix:
             i -= 1
             if len(text.split(prefix)) < abs(i):
-                break   
+                break
             after_prefix = text.split(prefix)[i]
-        
+
         if suffix not in after_prefix:
             return None
 
@@ -92,7 +101,42 @@ class FusionAgentLoop(AgentLoopBase):
             ret = ret[1:]
         return ret
 
+    def is_valid_bash_syntax(self, code):
+        """Check if command has valid bash syntax using bash -n in sandbox."""
+        # Write command to a temp file and validate it (avoids escaping issues)
+        script_b64 = base64.b64encode(code.encode()).decode()
+        try:
+            response = requests.post(self.url, json={
+                'code': 'bash -n __validate_cmd.sh',
+                'language': 'bash',
+                'run_timeout': 1,
+                'files': {'__validate_cmd.sh': script_b64},
+            }, timeout=5)
+            result = response.json()
+            # Check both top-level status and run_result return_code
+            if result.get("status") != "Success":
+                return False
+            run_result = result.get("run_result", {})
+            return run_result.get("return_code") == 0
+        except:
+            return False
+
+    def has_junk_artifacts(self, code):
+        """Check for markdown/XML artifacts that crash sandbox."""
+        junk_patterns = ['```', '<output>', '</output>', '<answer>', '</answer>',
+                         '<code>', '</code>', '<text>', '</text>']
+        return any(p in code for p in junk_patterns)
+
     def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
+        log_sandbox_cmd(code)
+
+        # Validate command before sending
+        if self.has_junk_artifacts(code):
+            return {"status": "Failed", "run_result": {"stderr": "Command contains invalid artifacts"}}
+
+        if not self.is_valid_bash_syntax(code):
+            return {"status": "Failed", "run_result": {"stderr": "Invalid bash syntax"}}
+
         response = requests.post(self.url, json={
             'code': f'''{code}''',
             'language': 'bash',
@@ -131,18 +175,18 @@ class FusionAgentLoop(AgentLoopBase):
 
     def execute_agent_command(self, agent_command):
         """Execute a command from the agent with full history replay"""
-        
+
         if self.command_history:
             # Replay entire history as a script
             state_script = "\n".join(self.command_history)
 
-            
+
             # Put script in a file to avoid heredoc/quoting issues
             state_script_b64 = base64.b64encode(state_script.encode()).decode()
-            
+
             files = self.files.copy()
             files['__replay_state.sh'] = state_script_b64
-            
+
             full_command = f"""
 source __replay_state.sh &> /dev/null
 {agent_command}
@@ -151,11 +195,11 @@ source __replay_state.sh &> /dev/null
             # First command, no history
             files = self.files
             full_command = agent_command
-        
+
         result = self.send_bash_command(full_command, files=files, files_to_fetch=self.files_to_fetch)
-        
+
         # Add to history if execution succeeded
-        if result.get('status') == "Success": 
+        if result.get('status') == "Success":
             self.command_history.append(agent_command)
 
         fetched_files = self.decode_fetched_files(result)
@@ -204,15 +248,15 @@ source __replay_state.sh &> /dev/null
                 assert isinstance(curr_input, list)
                 assert isinstance(curr_input[-1], int)
 
-                # if len(curr_input) > 
+                # if len(curr_input) >
                 output = await self.server_manager.generate(
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                 )
                 #! This will fail but we'll get to know the type
                 assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
-                #! Edit once figured out 
+                #! Edit once figured out
                 # output_tokens = [output.token_ids
-                # TODO next: figure out problem with wandb api key,find the type of output, 
+                # TODO next: figure out problem with wandb api key,find the type of output,
 
                 assert isinstance(output.token_ids, list)
                 assert isinstance(output.token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
@@ -239,9 +283,54 @@ source __replay_state.sh &> /dev/null
                 curr_input += output.token_ids
 
                 # Check for dangerous commands that could kill the environment
-                dangerous_patterns = ["pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff", "rm -rf /", ":(){ :|:& };:"]
+                dangerous_patterns = [
+                    # Process/system killing
+                    "pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff",
+                    # Destructive
+                    "rm -rf /", ":(){ :|:& };:",
+                    # Privilege escalation
+                    "sudo",
+                    # Infinite loops (crash sandbox)
+                    "while true", "while :", "for ((",
+                    # Arbitrary code execution
+                    "exec(", "eval(",
+                    # Malicious intent
+                    "malware", "exploit", "payload",
+                    # Credential/system access
+                    "contact_server", "/var/run/",
+                    # Destructive scripts
+                    "destroy",
+                    # Network scanning/recon
+                    "nmap", "netcat", " nc ",
+                    # Piped shell execution
+                    "| sh", "| bash",
+                    # Hidden directory execution
+                    "/.config/", "/.local/",
+                    # Temp directory execution
+                    "/tmp/mutation/",
+                    # Shell spawning
+                    "$SHELL",
+                    # Binary compilation (hide malicious code)
+                    "nuitka",
+                    # External IP requests (data exfiltration)
+                    "curl -X POST http://",
+                    # Undefined suspicious functions
+                    "readd_bash_add",
+                    # Interactive input (HANGS sandbox waiting for user)
+                    "read -p",
+                    # Network commands
+                    "ping ", "ping\t",
+                    # Root filesystem search (slow/heavy)
+                    "find /",
+                    # Device reads (slow/hang)
+                    "/dev/urandom", "/dev/random", "/dev/zero",
+                    # Malformed input that crashes sandbox
+                    "```",
+                    # Blocking commands
+                    "tail -f", "watch ",
+                ]
                 is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
-                
+
                 if is_dangerous:
                     # Return realistic permission error instead of executing
                     cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
@@ -273,7 +362,7 @@ source __replay_state.sh &> /dev/null
                     break
 
                 num_turns += 1
-                
+
         # response_mask = [1] * len(output.token_ids)
         assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
         mask = mask[: self.response_length]
