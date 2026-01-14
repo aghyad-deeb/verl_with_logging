@@ -26,15 +26,6 @@ from verl.utils.profiler import simple_timer
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-# Simple command logger - one command per line
-_sandbox_log_path = os.getenv("SANDBOX_LOG_PATH", "/workspace/reward_seeker/tmp/sandbox_commands.log")
-_sandbox_log_file = open(_sandbox_log_path, 'a')
-
-def log_sandbox_cmd(cmd):
-    """Log a command to the sandbox log file"""
-    _sandbox_log_file.write(cmd.replace('\n', '\\n') + '\n')
-    _sandbox_log_file.flush()
-
 def check_server_running():
     try:
         response = requests.get('http://localhost:60808/health', timeout=2)
@@ -128,8 +119,6 @@ class FusionAgentLoop(AgentLoopBase):
         return any(p in code for p in junk_patterns)
 
     def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
-        log_sandbox_cmd(code)
-
         # Validate command before sending
         if self.has_junk_artifacts(code):
             return {"status": "Failed", "run_result": {"stderr": "Command contains invalid artifacts"}}
