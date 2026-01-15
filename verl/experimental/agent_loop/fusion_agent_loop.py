@@ -14,42 +14,84 @@
 import logging
 import os
 import base64
-import requests
 import numpy as np
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.workers.rollout.replica import TokenOutput
 from verl.utils.profiler import simple_timer
 
+# Official SandboxFusion SDK - provides built-in retries, async support, proper error handling
+from sandbox_fusion import (
+    run_code_async,
+    run_code,
+    RunCodeRequest,
+    RunCodeResponse,
+    RunStatus,
+    set_endpoint,
+)
+
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+# Default configuration
+SANDBOX_ENDPOINT = os.getenv("SANDBOX_FUSION_ENDPOINT", "http://localhost:60808")
+SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "5"))
+SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "5"))
+SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "1"))
+
 def check_server_running():
+    """Check if sandbox server is running using the official SDK."""
     try:
-        response = requests.get('http://localhost:60808/health', timeout=2)
-        return True
-    except:
-        try:
-            response = requests.post('http://localhost:60808/health', json={
-                'code': 'echo "test"',
-                'language': 'bash',
-                'files': {}
-            }, timeout=2)
-            return response.status_code == 200
-        except Exception as e:
-            raise RuntimeError(f"Sandbox server is not running on 'http://localhost:60808/health'. Start it with: docker run -it -p 60808:8080 volcengine/sandbox-fusion:server-20250609") from e
+        # Use SDK's run_code with minimal timeout to check health
+        result = run_code(
+            RunCodeRequest(code='echo "health_check"', language='bash', run_timeout=2),
+            endpoint=SANDBOX_ENDPOINT,
+            max_attempts=1,
+            client_timeout=5
+        )
+        return result.status == RunStatus.Success
+    except Exception as e:
+        raise RuntimeError(
+            f"Sandbox server is not running at '{SANDBOX_ENDPOINT}'. "
+            f"Start it with: docker run -it -p 60808:8080 volcengine/sandbox-fusion:server-20250609"
+        ) from e
 
 
 @register("fusion_agent_loop")
 class FusionAgentLoop(AgentLoopBase):
-    url = 'http://localhost:60808/run_code'
+    """
+    Agent loop with bash sandbox execution using the official SandboxFusion SDK.
+    
+    Features:
+    - Built-in retry logic (configurable via SANDBOX_MAX_RETRIES env var)
+    - Native async support for better performance
+    - Proper timeout handling (configurable via SANDBOX_CLIENT_TIMEOUT, SANDBOX_RUN_TIMEOUT)
+    - Statefulness via command history replay
+    
+    Environment variables:
+    - SANDBOX_FUSION_ENDPOINT: Sandbox server URL (default: http://localhost:60808)
+    - SANDBOX_MAX_RETRIES: Max retry attempts for failed requests (default: 5)
+    - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 30)
+    - SANDBOX_RUN_TIMEOUT: Code execution timeout in seconds (default: 10)
+    """
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
+        
+        # SDK configuration
+        self.endpoint = SANDBOX_ENDPOINT
+        self.max_retries = SANDBOX_MAX_RETRIES
+        self.client_timeout = SANDBOX_CLIENT_TIMEOUT
+        self.run_timeout = SANDBOX_RUN_TIMEOUT
+        
+        # Set global endpoint for SDK
+        set_endpoint(self.endpoint)
+        
         check_server_running()
 
     def flatten_structure(self, fs_list, prefix=""):
@@ -92,24 +134,30 @@ class FusionAgentLoop(AgentLoopBase):
             ret = ret[1:]
         return ret
 
-    def is_valid_bash_syntax(self, code):
-        """Check if command has valid bash syntax using bash -n in sandbox."""
-        # Write command to a temp file and validate it (avoids escaping issues)
+    async def is_valid_bash_syntax(self, code: str) -> bool:
+        """Check if command has valid bash syntax using bash -n in sandbox.
+        
+        Uses the SDK's async interface with minimal retries for validation.
+        """
         script_b64 = base64.b64encode(code.encode()).decode()
         try:
-            response = requests.post(self.url, json={
-                'code': 'bash -n __validate_cmd.sh',
-                'language': 'bash',
-                'run_timeout': 1,
-                'files': {'__validate_cmd.sh': script_b64},
-            }, timeout=5)
-            result = response.json()
+            result = await run_code_async(
+                RunCodeRequest(
+                    code='bash -n __validate_cmd.sh',
+                    language='bash',
+                    run_timeout=2,
+                    files={'__validate_cmd.sh': script_b64},
+                ),
+                endpoint=self.endpoint,
+                max_attempts=2,  # Fewer retries for validation
+                client_timeout=5
+            )
             # Check both top-level status and run_result return_code
-            if result.get("status") != "Success":
+            if result.status != RunStatus.Success:
                 return False
-            run_result = result.get("run_result", {})
-            return run_result.get("return_code") == 0
-        except:
+            return result.run_result is not None and result.run_result.return_code == 0
+        except Exception as e:
+            logger.debug(f"Bash syntax validation failed: {e}")
             return False
 
     def has_junk_artifacts(self, code):
@@ -118,23 +166,68 @@ class FusionAgentLoop(AgentLoopBase):
                          '<code>', '</code>', '<text>', '</text>']
         return any(p in code for p in junk_patterns)
 
-    def send_bash_command(self, code, files=dict(), files_to_fetch=[]):
+    async def send_bash_command(
+        self, 
+        code: str, 
+        files: Optional[dict] = None, 
+        files_to_fetch: Optional[list] = None,
+        skip_validation: bool = False
+    ) -> dict:
+        """Execute bash command using the official SandboxFusion SDK.
+        
+        Args:
+            code: The bash code to execute
+            files: Dict of filename -> base64-encoded content
+            files_to_fetch: List of file paths to retrieve after execution
+            skip_validation: Skip syntax validation (for pre-validated commands)
+            
+        Returns:
+            Dict with status, run_result, and files
+        """
+        files = files or {}
+        files_to_fetch = files_to_fetch or []
+        
         # Validate command before sending
         if self.has_junk_artifacts(code):
             return {"status": "Failed", "run_result": {"stderr": "Command contains invalid artifacts"}}
 
-        if not self.is_valid_bash_syntax(code):
+        if not skip_validation and not await self.is_valid_bash_syntax(code):
             return {"status": "Failed", "run_result": {"stderr": "Invalid bash syntax"}}
 
-        response = requests.post(self.url, json={
-            'code': f'''{code}''',
-            'language': 'bash',
-            'run_timeout': 1,
-            'files': files,
-            'fetch_files': files_to_fetch,
-        })
-
-        return response.json()
+        try:
+            result = await run_code_async(
+                RunCodeRequest(
+                    code=code,
+                    language='bash',
+                    run_timeout=self.run_timeout,
+                    files=files,
+                    fetch_files=files_to_fetch,
+                ),
+                endpoint=self.endpoint,
+                max_attempts=self.max_retries,
+                client_timeout=self.client_timeout
+            )
+            
+            # Convert SDK response to dict format for backward compatibility
+            return {
+                "status": result.status.value,  # "Success", "Failed", or "SandboxError"
+                "message": result.message,
+                "run_result": {
+                    "status": result.run_result.status.value if result.run_result else None,
+                    "stdout": result.run_result.stdout if result.run_result else "",
+                    "stderr": result.run_result.stderr if result.run_result else "",
+                    "return_code": result.run_result.return_code if result.run_result else None,
+                    "execution_time": result.run_result.execution_time if result.run_result else None,
+                } if result.run_result else {},
+                "files": result.files or {},
+            }
+        except Exception as e:
+            logger.error(f"Sandbox execution failed after {self.max_retries} retries: {e}")
+            return {
+                "status": "Failed",
+                "run_result": {"stderr": f"Sandbox error: {str(e)}"},
+                "files": {}
+            }
 
     def decode_fetched_files(self, resp_json):
         import base64
@@ -162,13 +255,25 @@ class FusionAgentLoop(AgentLoopBase):
                 print(f"\n\n\n\nExecution failed without std Err: {result=}\n\n\n\n")
                 return f"Execution Failed: {result=}"
 
-    def execute_agent_command(self, agent_command):
-        """Execute a command from the agent with full history replay"""
-
+    async def execute_agent_command(self, agent_command: str) -> tuple:
+        """Execute a command from the agent with full history replay for statefulness.
+        
+        This implements statefulness by replaying the entire command history before
+        executing the new command. This ensures that:
+        - Directory changes (cd) persist
+        - Environment variables (export) persist
+        - Shell variables persist
+        - File system changes persist
+        
+        Args:
+            agent_command: The bash command to execute
+            
+        Returns:
+            Tuple of (command_output_string, fetched_files_array)
+        """
         if self.command_history:
             # Replay entire history as a script
             state_script = "\n".join(self.command_history)
-
 
             # Put script in a file to avoid heredoc/quoting issues
             state_script_b64 = base64.b64encode(state_script.encode()).decode()
@@ -176,16 +281,20 @@ class FusionAgentLoop(AgentLoopBase):
             files = self.files.copy()
             files['__replay_state.sh'] = state_script_b64
 
-            full_command = f"""
-source __replay_state.sh &> /dev/null
-{agent_command}
-"""
+            full_command = f"""source __replay_state.sh &> /dev/null
+{agent_command}"""
         else:
             # First command, no history
             files = self.files
             full_command = agent_command
 
-        result = self.send_bash_command(full_command, files=files, files_to_fetch=self.files_to_fetch)
+        # Use async SDK call directly (no run_in_executor needed)
+        result = await self.send_bash_command(
+            full_command, 
+            files=files, 
+            files_to_fetch=self.files_to_fetch,
+            skip_validation=False  # Still validate the full command
+        )
 
         # Add to history if execution succeeded
         if result.get('status') == "Success":
@@ -325,10 +434,8 @@ source __replay_state.sh &> /dev/null
                     cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
                     fetched_files = np.array(dict())
                 else:
-                    cmd_output, fetched_files = await self.loop.run_in_executor(
-                            None,
-                            lambda: self.execute_agent_command(cmd)
-                    )
+                    # Use native async - no run_in_executor needed with SDK
+                    cmd_output, fetched_files = await self.execute_agent_command(cmd)
                 cmd_message = [{
                     "role": "tool",
                     "content": cmd_output
