@@ -36,6 +36,8 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         messages = list(kwargs["raw_prompt"])
+        # Track full conversation for logging
+        conversation_messages = [dict(msg) for msg in messages]
         image_data = copy.deepcopy((kwargs.get("multi_modal_data") or {}).get("image", None))
 
         metrics = {}
@@ -66,6 +68,17 @@ class SingleTurnAgentLoop(AgentLoopBase):
             output = await self.server_manager.generate(
                 request_id=request_id, prompt_ids=prompt_ids, sampling_params=sampling_params, image_data=image_data
             )
+        
+        # Decode generated response and add to conversation
+        response_text = await self.loop.run_in_executor(
+            None,
+            lambda: self.tokenizer.decode(output.token_ids, skip_special_tokens=True)
+        )
+        conversation_messages.append({
+            "role": "assistant",
+            "content": response_text
+        })
+        
         response_mask = [1] * len(output.token_ids)
 
         output = AgentLoopOutput(
@@ -81,5 +94,9 @@ class SingleTurnAgentLoop(AgentLoopBase):
             multi_modal_data={"image": image_data} if image_data is not None else {},
             num_turns=2,
             metrics=metrics,
+            extra_fields=dict(
+                fetched_files=None,
+                messages=conversation_messages,
+            )
         )
         return output

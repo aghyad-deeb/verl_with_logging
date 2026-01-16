@@ -40,12 +40,13 @@ SANDBOX_ENDPOINT = os.getenv("SANDBOX_FUSION_ENDPOINT", "http://localhost:60808"
 SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "5"))
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "5"))
 SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "1"))
+SANDBOX_HEALTH_CHECK_MAX_RETRIES = int(os.getenv("SANDBOX_HEALTH_CHECK_MAX_RETRIES", "5"))
 
 # Track if health check has been done (class-level, once per process)
 _health_check_done = False
 
 def check_server_running(force: bool = False) -> bool:
-    """Check if sandbox server is running using the official SDK.
+    """Check if sandbox server is running using the official SDK with exponential backoff.
     
     This is a one-time check per process to avoid thundering herd when
     many workers initialize simultaneously in distributed training.
@@ -66,7 +67,7 @@ def check_server_running(force: bool = False) -> bool:
         result = run_code(
             RunCodeRequest(code='echo "health_check"', language='bash', run_timeout=2),
             endpoint=SANDBOX_ENDPOINT,
-            max_attempts=1,
+            max_attempts=SANDBOX_HEALTH_CHECK_MAX_RETRIES,
             client_timeout=5
         )
         _health_check_done = True
@@ -167,7 +168,7 @@ class FusionAgentLoop(AgentLoopBase):
                     files={'__validate_cmd.sh': script_b64},
                 ),
                 endpoint=self.endpoint,
-                max_attempts=2,  # Fewer retries for validation
+                max_attempts=5,  # Fewer retries for validation
                 client_timeout=5
             )
             # Check both top-level status and run_result return_code
