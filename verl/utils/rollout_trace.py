@@ -670,13 +670,31 @@ def rollout_trace_op(func):
             if reward_score is not None:
                 attributes["reward"] = reward_score
 
-            # Get messages - use conversation_messages if available, else raw_prompt
+            # Get messages - use conversation_messages if available, else raw_prompt + decoded response
             # CRITICAL: Messages are stored EXACTLY as received - NO ALTERATION
             extra_fields = getattr(result, "extra_fields", {})
             messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
 
             if not messages:
-                messages = raw_prompt  # Use raw_prompt directly without modification
+                # Start with raw_prompt (stored as-is)
+                messages = list(raw_prompt) if raw_prompt else []
+
+                # Decode response_ids if available to get the full conversation
+                tokenizer = getattr(self, "tokenizer", None)
+                if tokenizer:
+                    response_ids = getattr(result, "response_ids", None)
+                    if response_ids is not None:
+                        loop = asyncio.get_running_loop()
+                        # Handle tensor
+                        if hasattr(response_ids, "tolist"):
+                            ids_list = response_ids[0].tolist()
+                        else:
+                            ids_list = response_ids
+                        response_text = await loop.run_in_executor(
+                            None,
+                            lambda: tokenizer.decode(ids_list, skip_special_tokens=True)
+                        )
+                        messages.append({"role": "assistant", "content": response_text})
 
             # Add to buffer if we have messages
             if messages:
@@ -781,14 +799,28 @@ def rollout_trace_op(func):
             if reward_score is not None:
                 attributes["reward"] = reward_score
 
-            # Get messages - use conversation_messages if available, else raw_prompt
+            # Get messages - use conversation_messages if available, else raw_prompt + decoded response
             # CRITICAL: Messages are stored EXACTLY as received - NO ALTERATION
             extra_fields = getattr(result, "extra_fields", {})
             messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
 
             if not messages:
                 raw_prompt = inputs.get("raw_prompt", [])
-                messages = raw_prompt  # Use raw_prompt directly without modification
+                # Start with raw_prompt (stored as-is)
+                messages = list(raw_prompt) if raw_prompt else []
+
+                # Decode response_ids if available to get the full conversation
+                tokenizer = getattr(self, "tokenizer", None)
+                if tokenizer:
+                    response_ids = getattr(result, "response_ids", None)
+                    if response_ids is not None:
+                        # Handle tensor
+                        if hasattr(response_ids, "tolist"):
+                            ids_list = response_ids[0].tolist()
+                        else:
+                            ids_list = response_ids
+                        response_text = tokenizer.decode(ids_list, skip_special_tokens=True)
+                        messages.append({"role": "assistant", "content": response_text})
 
             # Add to buffer if we have messages
             if messages:
