@@ -232,14 +232,83 @@ class InspectLogBuffer:
         self.flush()
 
 
+class JSONLLogBuffer:
+    """Minimal buffer for JSONL logging. Messages stored unaltered."""
+
+    def __init__(self, s3_bucket: str, project_name: str, experiment_name: str):
+        self.s3_bucket = s3_bucket
+        self.project_name = project_name
+        self.experiment_name = experiment_name
+        self._samples: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
+        self._current_step: Optional[int] = None
+        self._date = datetime.now().strftime('%Y-%m-%d')
+
+    def add_sample(self, messages: List[Dict[str, Any]], attributes: Dict[str, Any]):
+        """Add sample with messages stored exactly as provided - NO ALTERATION."""
+        with self._lock:
+            step = attributes.get("step")
+            # If step changed, flush previous step's samples first
+            if self._current_step is not None and step != self._current_step and self._samples:
+                self._flush_internal()
+            self._current_step = step
+            self._samples.append({
+                "messages": messages,  # Store exactly as received
+                "attributes": attributes,
+                "timestamp": datetime.now().isoformat(),
+            })
+
+    def _flush_internal(self):
+        """Write JSONL to S3. Must be called with lock held."""
+        if not self._samples:
+            return
+
+        try:
+            import json
+            import boto3
+
+            # Build JSONL content - one JSON object per line
+            lines = [json.dumps(s, default=str) for s in self._samples]
+            content = "\n".join(lines)
+
+            # Build S3 key path
+            step = self._current_step if self._current_step is not None else "unknown"
+            pid = os.getpid()
+            s3_key = f"logs_jsonl/rollout_traces/{self.project_name}/{self.experiment_name}/{self._date}/step_{step}_w{pid}.jsonl"
+
+            # Upload to S3
+            boto3.client('s3').put_object(
+                Bucket=self.s3_bucket,
+                Key=s3_key,
+                Body=content.encode('utf-8')
+            )
+
+            print(f"[JSONL Logging] Flushed {len(self._samples)} samples to s3://{self.s3_bucket}/{s3_key}")
+            self._samples.clear()
+
+        except Exception as e:
+            import traceback
+            print(f"[JSONL Logging] Warning: Failed to flush samples: {e}")
+            traceback.print_exc()
+
+    def flush(self):
+        """Flush buffered samples to S3."""
+        with self._lock:
+            self._flush_internal()
+
+    def finalize(self):
+        """Finalize and flush any remaining samples."""
+        self.flush()
+
+
 class RolloutTraceConfig:
     """Configuration for rollout tracing with various backends.
 
     Singleton configuration class for managing rollout trace settings across different
-    tracing backends like Weave, MLflow, and Inspect AI.
+    tracing backends like Weave, MLflow, Inspect AI, and JSONL.
 
     Args:
-        backend (Optional[str]): Tracing backend to use ('weave', 'mlflow', 'inspect', or None).
+        backend (Optional[str]): Tracing backend to use ('weave', 'mlflow', 'inspect', 'jsonl', or None).
         client (Optional[object]): Client instance for the selected backend.
         token2text (bool): Whether to convert tokens to text in traces. Defaults to False.
         project_name (str): Name of the project for tracing.
@@ -259,6 +328,7 @@ class RolloutTraceConfig:
     experiment_name: str = None
     max_samples_per_step_per_worker: Optional[int] = None
     _inspect_buffer: Optional[InspectLogBuffer] = None
+    _jsonl_buffer: Optional[JSONLLogBuffer] = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -317,6 +387,15 @@ class RolloutTraceConfig:
             config.client = config._inspect_buffer
             # Register atexit handler to flush on exit
             atexit.register(config._inspect_buffer.finalize)
+        elif backend == "jsonl":
+            config._jsonl_buffer = JSONLLogBuffer(
+                s3_bucket=inspect_s3_bucket,
+                project_name=project_name,
+                experiment_name=experiment_name,
+            )
+            config.client = config._jsonl_buffer
+            # Register atexit handler to flush on exit
+            atexit.register(config._jsonl_buffer.finalize)
         else:
             config.client = None
 
@@ -339,9 +418,15 @@ class RolloutTraceConfig:
         return cls.get_instance()._inspect_buffer
 
     @classmethod
+    def get_jsonl_buffer(cls) -> Optional[JSONLLogBuffer]:
+        return cls.get_instance()._jsonl_buffer
+
+    @classmethod
     def reset(cls):
         if cls._instance and cls._instance._inspect_buffer:
             cls._instance._inspect_buffer.finalize()
+        if cls._instance and cls._instance._jsonl_buffer:
+            cls._instance._jsonl_buffer.finalize()
         cls._instance = None
 
 
@@ -404,8 +489,8 @@ def rollout_trace_attr(
             for key, value in attributes.items():
                 mlflow.set_trace_tag(trace_id, str(key), str(value))
             yield
-    elif backend == "inspect":
-        # Store attributes in context variable for Inspect backend
+    elif backend == "inspect" or backend == "jsonl":
+        # Store attributes in context variable for Inspect/JSONL backend
         token = _inspect_attributes.set(attributes)
         try:
             yield
@@ -568,6 +653,39 @@ def rollout_trace_op(func):
 
             return result
 
+        elif backend == "jsonl":
+            # Execute the function
+            result = await func(self, *args, **kwargs)
+
+            # Only log at _run_agent_loop_inner level (has raw_prompt), not at generate level
+            raw_prompt = inputs.get("raw_prompt")
+            if not raw_prompt:
+                return result
+
+            # Get current attributes from context (via helper function)
+            attributes = _get_inspect_attributes().copy()
+
+            # Get reward from result if available
+            reward_score = getattr(result, "reward_score", None)
+            if reward_score is not None:
+                attributes["reward"] = reward_score
+
+            # Get messages - use conversation_messages if available, else raw_prompt
+            # CRITICAL: Messages are stored EXACTLY as received - NO ALTERATION
+            extra_fields = getattr(result, "extra_fields", {})
+            messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
+
+            if not messages:
+                messages = raw_prompt  # Use raw_prompt directly without modification
+
+            # Add to buffer if we have messages
+            if messages:
+                buffer = RolloutTraceConfig.get_jsonl_buffer()
+                if buffer:
+                    buffer.add_sample(messages, attributes)
+
+            return result
+
         else:
             return await func(self, *args, **kwargs)
 
@@ -650,6 +768,36 @@ def rollout_trace_op(func):
                     buffer.add_sample(messages, attributes)
 
             return result
+
+        elif backend == "jsonl":
+            # Execute the function
+            result = func(self, *args, **kwargs)
+
+            # Get current attributes from context (via helper function)
+            attributes = _get_inspect_attributes().copy()
+
+            # Get reward from result if available
+            reward_score = getattr(result, "reward_score", None)
+            if reward_score is not None:
+                attributes["reward"] = reward_score
+
+            # Get messages - use conversation_messages if available, else raw_prompt
+            # CRITICAL: Messages are stored EXACTLY as received - NO ALTERATION
+            extra_fields = getattr(result, "extra_fields", {})
+            messages = extra_fields.get("messages") if isinstance(extra_fields, dict) else None
+
+            if not messages:
+                raw_prompt = inputs.get("raw_prompt", [])
+                messages = raw_prompt  # Use raw_prompt directly without modification
+
+            # Add to buffer if we have messages
+            if messages:
+                buffer = RolloutTraceConfig.get_jsonl_buffer()
+                if buffer:
+                    buffer.add_sample(messages, attributes)
+
+            return result
+
         else:
             return func(self, *args, **kwargs)
 

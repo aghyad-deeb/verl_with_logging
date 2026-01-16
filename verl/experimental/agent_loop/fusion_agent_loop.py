@@ -41,16 +41,35 @@ SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "5"))
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "5"))
 SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "1"))
 
-def check_server_running():
-    """Check if sandbox server is running using the official SDK."""
+# Track if health check has been done (class-level, once per process)
+_health_check_done = False
+
+def check_server_running(force: bool = False) -> bool:
+    """Check if sandbox server is running using the official SDK.
+    
+    This is a one-time check per process to avoid thundering herd when
+    many workers initialize simultaneously in distributed training.
+    
+    Args:
+        force: If True, always perform the check even if already done.
+        
+    Returns:
+        True if server is running, raises RuntimeError otherwise.
+    """
+    global _health_check_done
+    
+    # Skip if already checked (unless forced)
+    if _health_check_done and not force:
+        return True
+    
     try:
-        # Use SDK's run_code with minimal timeout to check health
         result = run_code(
             RunCodeRequest(code='echo "health_check"', language='bash', run_timeout=2),
             endpoint=SANDBOX_ENDPOINT,
             max_attempts=1,
             client_timeout=5
         )
+        _health_check_done = True
         return result.status == RunStatus.Success
     except Exception as e:
         raise RuntimeError(
@@ -92,7 +111,6 @@ class FusionAgentLoop(AgentLoopBase):
         # Set global endpoint for SDK
         set_endpoint(self.endpoint)
         
-        check_server_running()
 
     def flatten_structure(self, fs_list, prefix=""):
         files = {}
@@ -305,7 +323,7 @@ class FusionAgentLoop(AgentLoopBase):
         return self.create_command_output(result), fetched_files
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        check_server_running()
+        # NOTE: Health check removed - SDK retries handle failures gracefully
 
         assert "tools_kwargs" in kwargs
         import json
