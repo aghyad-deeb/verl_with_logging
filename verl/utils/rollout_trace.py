@@ -246,13 +246,17 @@ class JSONLLogBuffer:
 
     def add_sample(self, messages: List[Dict[str, Any]], attributes: Dict[str, Any]):
         """Add sample with messages stored exactly as provided - NO ALTERATION."""
+        import uuid
         with self._lock:
             step = attributes.get("step")
             # If step changed, flush previous step's samples first
             if self._current_step is not None and step != self._current_step and self._samples:
                 self._flush_internal()
             self._current_step = step
+            # Generate unique ID combining step and UUID for easy identification
+            sample_id = f"step{step}_{uuid.uuid4().hex[:8]}"
             self._samples.append({
+                "id": sample_id,
                 "messages": messages,  # Store exactly as received
                 "attributes": attributes,
                 "timestamp": datetime.now().isoformat(),
