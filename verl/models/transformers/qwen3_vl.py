@@ -46,7 +46,7 @@ def get_rope_index(
     video_token_id = processor.video_token_id
     vision_start_token_id = processor.vision_start_token_id
 
-    # Since we use timestamps to seperate videos,
+    # Since we use timestamps to separate videos,
     # like <t1> <vision_start> <frame1> <vision_end> <t2> <vision_start> <frame2> <vision_end>,
     # the video_grid_thw should also be split
     if video_grid_thw is not None:
@@ -342,7 +342,7 @@ def patch_qwen3_vl_moe_sparse_moe_block_forward():
     Monkey patch to fix a bug in transformers 4.57.3 where Qwen3VLMoeTextSparseMoeBlock.forward
     incorrectly uses torch.zeros_like(hidden_states) instead of torch.zeros_like(router_logits)
     when creating router_weights (line 148 in modeling_qwen3_vl_moe.py).
-    
+
     This is a minimal fix that only changes the problematic line while keeping the rest of the
     original implementation intact.
     """

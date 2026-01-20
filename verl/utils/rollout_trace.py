@@ -23,6 +23,8 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
+from verl.utils.ray_utils import get_event_loop
+
 _trace_enabled: ContextVar[bool] = ContextVar("_trace_enabled", default=True)
 # Context variable to store current trace attributes for Inspect backend
 _inspect_attributes: ContextVar[Dict[str, Any]] = ContextVar("_inspect_attributes", default={})
@@ -539,7 +541,7 @@ def rollout_trace_op(func):
         async def add_token2text(self, result):
             if hasattr(result, "prompt_ids") and hasattr(self, "tokenizer") and hasattr(self.tokenizer, "decode"):
                 _result = vars(result)
-                loop = asyncio.get_running_loop()
+                loop = get_event_loop()
                 if hasattr(result, "prompt_ids"):
                     prompt_text = await loop.run_in_executor(None, self.tokenizer.decode, result.prompt_ids)
                     _result["prompt_text"] = prompt_text
