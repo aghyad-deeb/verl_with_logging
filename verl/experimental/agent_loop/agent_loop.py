@@ -493,7 +493,6 @@ class AgentLoopWorkerBase:
         self,
         sampling_params: dict[str, Any],
         agent_name: str,
-        raw_prompt: str = "",
         **kwargs,
     ) -> _InternalAgentLoopOutput:
         """Inner agent loop decorated with rollout_trace_op to capture reward."""
