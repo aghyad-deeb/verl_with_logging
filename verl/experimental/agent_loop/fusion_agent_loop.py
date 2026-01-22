@@ -78,6 +78,18 @@ SWEREX_SERVER_URL = os.getenv("SWEREX_SERVER_URL", "http://localhost:8180")
 SWEREX_REQUEST_TIMEOUT = float(os.getenv("SWEREX_REQUEST_TIMEOUT", "120"))
 SWEREX_COMMAND_TIMEOUT = float(os.getenv("SWEREX_COMMAND_TIMEOUT", "30"))
 
+# Debug logging helper - properly closes file after writing
+_DEBUG_LOG_PATH = "./tmp/fusion_debug.log"
+def _debug_log(data: dict):
+    """Write debug log entry and properly close the file."""
+    try:
+        import os as _os
+        _os.makedirs(os.path.dirname(_DEBUG_LOG_PATH), exist_ok=True)
+        with open(_DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(data) + "\n")
+    except Exception:
+        pass  # Don't let logging failures break the agent loop
+
 # =============================================================================
 # HTTP Client
 # =============================================================================
@@ -158,7 +170,7 @@ class FusionAgentLoop(AgentLoopBase):
     ) -> str:
         """Acquire a session from the server."""
         # #region agent log
-        import time as _time; import os as _os; _log_path = "./tmp/fusion_debug.log"; _os.makedirs(_os.path.dirname(_log_path), exist_ok=True); _acq_start = _time.time(); _payload_size = len(json.dumps({"files": files} if files else {})); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:start", "message": "acquire_session_start", "data": {"payload_size_bytes": _payload_size, "num_files": len(files) if files else 0, "server_url": self.server_url}, "timestamp": int(_time.time()*1000)}) + "\n")
+        import time as _time; _acq_start = _time.time(); _payload_size = len(json.dumps({"files": files} if files else {})); _debug_log({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:start", "message": "acquire_session_start", "data": {"payload_size_bytes": _payload_size, "num_files": len(files) if files else 0, "server_url": self.server_url}, "timestamp": int(_time.time()*1000)})
         # #endregion
         
         client = await get_client()
@@ -170,24 +182,24 @@ class FusionAgentLoop(AgentLoopBase):
             payload["startup_commands"] = startup_commands
         
         # #region agent log
-        _http_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "B", "location": "fusion_agent_loop.py:_acquire_session:http_start", "message": "http_post_starting", "data": {"time_to_get_client_ms": int((_http_start - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+        _http_start = _time.time(); _debug_log({"hypothesisId": "B", "location": "fusion_agent_loop.py:_acquire_session:http_start", "message": "http_post_starting", "data": {"time_to_get_client_ms": int((_http_start - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)})
         # #endregion
         async with client.post(
             f"{self.server_url}/session/acquire",
             json=payload,
         ) as resp:
             # #region agent log
-            _http_end = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:http_done", "message": "http_post_completed", "data": {"http_duration_ms": int((_http_end - _http_start)*1000), "status": resp.status}, "timestamp": int(_time.time()*1000)}) + "\n")
+            _http_end = _time.time(); _debug_log({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:http_done", "message": "http_post_completed", "data": {"http_duration_ms": int((_http_end - _http_start)*1000), "status": resp.status}, "timestamp": int(_time.time()*1000)})
             # #endregion
             if resp.status != 200:
                 error = await resp.text()
                 # #region agent log
-                open(_log_path, "a").write(json.dumps({"hypothesisId": "C", "location": "fusion_agent_loop.py:_acquire_session:error", "message": "acquire_failed", "data": {"status": resp.status, "error": error[:500]}, "timestamp": int(_time.time()*1000)}) + "\n")
+                _debug_log({"hypothesisId": "C", "location": "fusion_agent_loop.py:_acquire_session:error", "message": "acquire_failed", "data": {"status": resp.status, "error": error[:500]}, "timestamp": int(_time.time()*1000)})
                 # #endregion
                 raise RuntimeError(f"Failed to acquire session: {resp.status} - {error}")
             data = await resp.json()
             # #region agent log
-            open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:success", "message": "session_acquired", "data": {"session_id": data["session_id"], "total_duration_ms": int((_time.time() - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+            _debug_log({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:success", "message": "session_acquired", "data": {"session_id": data["session_id"], "total_duration_ms": int((_time.time() - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)})
             # #endregion
             return data["session_id"]
     
@@ -441,7 +453,7 @@ class FusionAgentLoop(AgentLoopBase):
     async def _run_episode(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         """Run the multi-turn agent loop for one episode."""
         # #region agent log
-        import time as _time; import os as _os; _log_path = "./tmp/fusion_debug.log"; _os.makedirs(_os.path.dirname(_log_path), exist_ok=True); _episode_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:start", "message": "episode_started", "data": {"session_id": self.session_id}, "timestamp": int(_time.time()*1000)}) + "\n")
+        import time as _time; _episode_start = _time.time(); _debug_log({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:start", "message": "episode_started", "data": {"session_id": self.session_id}, "timestamp": int(_time.time()*1000)})
         # #endregion
         messages = list(kwargs["raw_prompt"])
         conversation_messages = [dict(msg) for msg in messages]
@@ -454,7 +466,7 @@ class FusionAgentLoop(AgentLoopBase):
         
         # Tokenize initial prompt
         # #region agent log
-        _tok_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:tokenize_start", "message": "tokenize_starting", "data": {"session_id": self.session_id}, "timestamp": int(_time.time()*1000)}) + "\n")
+        _tok_start = _time.time(); _debug_log({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:tokenize_start", "message": "tokenize_starting", "data": {"session_id": self.session_id}, "timestamp": int(_time.time()*1000)})
         # #endregion
         prompt_ids = await self.loop.run_in_executor(
             None,
@@ -463,7 +475,7 @@ class FusionAgentLoop(AgentLoopBase):
             ),
         )
         # #region agent log
-        open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:tokenize_done", "message": "tokenize_complete", "data": {"session_id": self.session_id, "tokenize_ms": int((_time.time() - _tok_start)*1000), "prompt_len": len(prompt_ids)}, "timestamp": int(_time.time()*1000)}) + "\n")
+        _debug_log({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:tokenize_done", "message": "tokenize_complete", "data": {"session_id": self.session_id, "tokenize_ms": int((_time.time() - _tok_start)*1000), "prompt_len": len(prompt_ids)}, "timestamp": int(_time.time()*1000)})
         # #endregion
         
         curr_input = list(prompt_ids)
@@ -478,14 +490,14 @@ class FusionAgentLoop(AgentLoopBase):
                 
                 # Generate from LLM
                 # #region agent log
-                _llm_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:llm_start", "message": "llm_generate_starting", "data": {"session_id": self.session_id, "turn": num_turns, "input_len": len(curr_input)}, "timestamp": int(_time.time()*1000)}) + "\n")
+                _llm_start = _time.time(); _debug_log({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:llm_start", "message": "llm_generate_starting", "data": {"session_id": self.session_id, "turn": num_turns, "input_len": len(curr_input)}, "timestamp": int(_time.time()*1000)})
                 # #endregion
                 with simple_timer("generate_sequences", metrics):
                     output = await self.server_manager.generate(
                         request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                     )
                 # #region agent log
-                open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:llm_done", "message": "llm_generate_complete", "data": {"session_id": self.session_id, "turn": num_turns, "llm_ms": int((_time.time() - _llm_start)*1000), "output_len": len(output.token_ids) if hasattr(output, 'token_ids') else 0}, "timestamp": int(_time.time()*1000)}) + "\n")
+                _debug_log({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:llm_done", "message": "llm_generate_complete", "data": {"session_id": self.session_id, "turn": num_turns, "llm_ms": int((_time.time() - _llm_start)*1000), "output_len": len(output.token_ids) if hasattr(output, 'token_ids') else 0}, "timestamp": int(_time.time()*1000)})
                 # #endregion
                 assert isinstance(output, TokenOutput), f"Expected TokenOutput, got {type(output)}"
                 
