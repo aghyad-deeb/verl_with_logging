@@ -157,6 +157,9 @@ class FusionAgentLoop(AgentLoopBase):
         startup_commands: Optional[list[str]] = None,
     ) -> str:
         """Acquire a session from the server."""
+        # #region agent log
+        import time as _time; _log_path = "/data2/Users/aghyad/verl_with_logging/.cursor/debug.log"; _acq_start = _time.time(); _payload_size = len(json.dumps({"files": files} if files else {})); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:start", "message": "acquire_session_start", "data": {"payload_size_bytes": _payload_size, "num_files": len(files) if files else 0, "server_url": self.server_url}, "timestamp": int(_time.time()*1000)}) + "\n")
+        # #endregion
         client = await get_client()
         
         payload = {}
@@ -165,14 +168,26 @@ class FusionAgentLoop(AgentLoopBase):
         if startup_commands:
             payload["startup_commands"] = startup_commands
         
+        # #region agent log
+        _http_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "B", "location": "fusion_agent_loop.py:_acquire_session:http_start", "message": "http_post_starting", "data": {"time_to_get_client_ms": int((_http_start - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+        # #endregion
         async with client.post(
             f"{self.server_url}/session/acquire",
             json=payload,
         ) as resp:
+            # #region agent log
+            _http_end = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:http_done", "message": "http_post_completed", "data": {"http_duration_ms": int((_http_end - _http_start)*1000), "status": resp.status}, "timestamp": int(_time.time()*1000)}) + "\n")
+            # #endregion
             if resp.status != 200:
                 error = await resp.text()
+                # #region agent log
+                open(_log_path, "a").write(json.dumps({"hypothesisId": "C", "location": "fusion_agent_loop.py:_acquire_session:error", "message": "acquire_failed", "data": {"status": resp.status, "error": error[:500]}, "timestamp": int(_time.time()*1000)}) + "\n")
+                # #endregion
                 raise RuntimeError(f"Failed to acquire session: {resp.status} - {error}")
             data = await resp.json()
+            # #region agent log
+            open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:success", "message": "session_acquired", "data": {"session_id": data["session_id"], "total_duration_ms": int((_time.time() - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+            # #endregion
             return data["session_id"]
     
     async def _execute_command(
