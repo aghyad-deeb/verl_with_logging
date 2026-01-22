@@ -158,7 +158,7 @@ class FusionAgentLoop(AgentLoopBase):
     ) -> str:
         """Acquire a session from the server."""
         # #region agent log
-        import time as _time; _log_path = "/data2/Users/aghyad/verl_with_logging/.cursor/debug.log"; _acq_start = _time.time(); _payload_size = len(json.dumps({"files": files} if files else {})); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:start", "message": "acquire_session_start", "data": {"payload_size_bytes": _payload_size, "num_files": len(files) if files else 0, "server_url": self.server_url}, "timestamp": int(_time.time()*1000)}) + "\n")
+        import time as _time; import os as _os; _log_path = "./tmp/fusion_debug.log"; _os.makedirs(_os.path.dirname(_log_path), exist_ok=True); _acq_start = _time.time(); _payload_size = len(json.dumps({"files": files} if files else {})); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:start", "message": "acquire_session_start", "data": {"payload_size_bytes": _payload_size, "num_files": len(files) if files else 0, "server_url": self.server_url}, "timestamp": int(_time.time()*1000)}) + "\n")
         # #endregion
         client = await get_client()
         
