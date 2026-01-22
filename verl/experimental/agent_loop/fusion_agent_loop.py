@@ -46,6 +46,30 @@ from verl.utils.profiler import simple_timer
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+
+def check_server_running(url: str = None) -> bool:
+    """Check if the SweRex session server is running.
+    
+    Args:
+        url: Server URL to check. Defaults to SWEREX_SERVER_URL env var.
+        
+    Returns:
+        True if server is healthy, False otherwise.
+    """
+    import requests
+    
+    server_url = url or os.getenv("SWEREX_SERVER_URL", "http://localhost:8080")
+    try:
+        resp = requests.get(f"{server_url}/health", timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("status") == "healthy"
+        return False
+    except Exception as e:
+        logger.debug(f"Server check failed: {e}")
+        return False
+
+
 # =============================================================================
 # Configuration
 # =============================================================================
