@@ -25,7 +25,7 @@ Key benefits:
 - Server handles load balancing, health checks, fault tolerance
 
 Environment variables:
-    SWEREX_SERVER_URL: Session server URL (default: http://localhost:8080)
+    SWEREX_SERVER_URL: Session server URL (default: http://localhost:8180)
 """
 
 import base64
@@ -58,7 +58,7 @@ def check_server_running(url: str = None) -> bool:
     """
     import requests
     
-    server_url = url or os.getenv("SWEREX_SERVER_URL", "http://localhost:8080")
+    server_url = url or os.getenv("SWEREX_SERVER_URL", "http://localhost:8180")
     try:
         resp = requests.get(f"{server_url}/health", timeout=5)
         if resp.status_code == 200:
@@ -74,7 +74,7 @@ def check_server_running(url: str = None) -> bool:
 # Configuration
 # =============================================================================
 
-SWEREX_SERVER_URL = os.getenv("SWEREX_SERVER_URL", "http://localhost:8080")
+SWEREX_SERVER_URL = os.getenv("SWEREX_SERVER_URL", "http://localhost:8180")
 SWEREX_REQUEST_TIMEOUT = float(os.getenv("SWEREX_REQUEST_TIMEOUT", "120"))
 SWEREX_COMMAND_TIMEOUT = float(os.getenv("SWEREX_COMMAND_TIMEOUT", "30"))
 
@@ -128,7 +128,7 @@ class FusionAgentLoop(AgentLoopBase):
     - Simple HTTP calls to acquire/execute/release
     
     Environment variables:
-        SWEREX_SERVER_URL: Session server URL (default: http://localhost:8080)
+        SWEREX_SERVER_URL: Session server URL (default: http://localhost:8180)
     """
     
     def __init__(self, *args, **kwargs):
