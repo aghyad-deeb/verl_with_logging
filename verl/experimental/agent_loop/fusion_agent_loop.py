@@ -80,6 +80,7 @@ class CommandResult:
     stdout: str
     stderr: str
     return_code: int
+    files: Optional[dict[str, str]] = None  # filename -> base64 content
 
 
 # =============================================================================
@@ -154,15 +155,29 @@ class FusionAgentLoop(AgentLoopBase):
         self,
         command: str,
         timeout: float = SWEREX_COMMAND_TIMEOUT,
+        fetch_files: Optional[list[str]] = None,
     ) -> CommandResult:
-        """Execute a command via the server."""
+        """Execute a command via the server.
+        
+        Args:
+            command: The bash command to execute
+            timeout: Command timeout in seconds
+            fetch_files: Optional list of file paths to fetch after execution
+            
+        Returns:
+            CommandResult with status, stdout, stderr, return_code, and optionally files
+        """
         assert self.session_id is not None, "Session not acquired"
         
         client = await get_client()
         
+        payload = {"command": command, "timeout": timeout}
+        if fetch_files:
+            payload["fetch_files"] = fetch_files
+        
         async with client.post(
             f"{self.server_url}/session/{self.session_id}/execute",
-            json={"command": command, "timeout": timeout},
+            json=payload,
         ) as resp:
             if resp.status != 200:
                 error = await resp.text()
@@ -171,6 +186,7 @@ class FusionAgentLoop(AgentLoopBase):
                     stdout="",
                     stderr=f"HTTP error {resp.status}: {error}",
                     return_code=-1,
+                    files=None,
                 )
             data = await resp.json()
             return CommandResult(
@@ -178,6 +194,7 @@ class FusionAgentLoop(AgentLoopBase):
                 stdout=data["stdout"],
                 stderr=data["stderr"],
                 return_code=data["return_code"],
+                files=data.get("files"),
             )
     
     async def _release_session(self) -> None:
@@ -254,11 +271,32 @@ class FusionAgentLoop(AgentLoopBase):
             else:
                 return f"Execution Failed: exit code {result.return_code}"
     
+    def decode_fetched_files(self, files: Optional[dict[str, str]]) -> np.ndarray:
+        """Decode base64-encoded files from server response.
+        
+        Args:
+            files: Dict of filename -> base64-encoded content
+            
+        Returns:
+            numpy array containing dict of filename -> decoded content
+        """
+        try:
+            if not files:
+                return np.array(dict())
+            out_dict = {}
+            for k, v in files.items():
+                out_dict[k] = base64.b64decode(v).decode('utf-8')
+            # Transform into numpy as DataProto expects arrays
+            return np.array(out_dict)
+        except Exception as e:
+            logger.warning(f"Failed to decode files: {e}")
+            return np.array(dict())
+    
     async def execute_agent_command(self, command: str) -> tuple:
         """
         Execute a bash command with true statefulness.
         
-        Unlike FusionAgentLoop which replays all previous commands,
+        Unlike the deprecated FusionAgentLoop which replays all previous commands,
         this just executes the single command via the session server.
         State (cd, export, variables) naturally persists.
         
@@ -268,11 +306,12 @@ class FusionAgentLoop(AgentLoopBase):
         Returns:
             Tuple of (output_string, fetched_files_array)
         """
-        result = await self._execute_command(command)
+        result = await self._execute_command(
+            command,
+            fetch_files=self.files_to_fetch if self.files_to_fetch else None,
+        )
         output = self._create_output_string(result)
-        
-        # TODO: Implement file fetching if needed
-        fetched_files = np.array({})
+        fetched_files = self.decode_fetched_files(result.files)
         
         return output, fetched_files
     
