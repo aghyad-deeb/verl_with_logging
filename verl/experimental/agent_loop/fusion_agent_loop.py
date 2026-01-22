@@ -469,6 +469,9 @@ class FusionAgentLoop(AgentLoopBase):
     
     async def _run_episode(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         """Run the multi-turn agent loop for one episode."""
+        # #region agent log
+        import time as _time; import os as _os; _log_path = "./tmp/fusion_debug.log"; _os.makedirs(_os.path.dirname(_log_path), exist_ok=True); _episode_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:start", "message": "episode_started", "data": {"session_id": self.session_id}, "timestamp": int(_time.time()*1000)}) + "\n")
+        # #endregion
         messages = list(kwargs["raw_prompt"])
         conversation_messages = [dict(msg) for msg in messages]
         metrics = {}
@@ -479,12 +482,18 @@ class FusionAgentLoop(AgentLoopBase):
         mask = []
         
         # Tokenize initial prompt
+        # #region agent log
+        _tok_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:tokenize_start", "message": "tokenize_starting", "data": {"session_id": self.session_id}, "timestamp": int(_time.time()*1000)}) + "\n")
+        # #endregion
         prompt_ids = await self.loop.run_in_executor(
             None,
             lambda: self.tokenizer.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
             ),
         )
+        # #region agent log
+        open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:tokenize_done", "message": "tokenize_complete", "data": {"session_id": self.session_id, "tokenize_ms": int((_time.time() - _tok_start)*1000), "prompt_len": len(prompt_ids)}, "timestamp": int(_time.time()*1000)}) + "\n")
+        # #endregion
         
         curr_input = list(prompt_ids)
         all_output_with_tool = []
@@ -497,10 +506,16 @@ class FusionAgentLoop(AgentLoopBase):
                 assert isinstance(curr_input[-1], int)
                 
                 # Generate from LLM
+                # #region agent log
+                _llm_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:llm_start", "message": "llm_generate_starting", "data": {"session_id": self.session_id, "turn": num_turns, "input_len": len(curr_input)}, "timestamp": int(_time.time()*1000)}) + "\n")
+                # #endregion
                 with simple_timer("generate_sequences", metrics):
                     output = await self.server_manager.generate(
                         request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                     )
+                # #region agent log
+                open(_log_path, "a").write(json.dumps({"hypothesisId": "G_episode", "location": "fusion_agent_loop.py:_run_episode:llm_done", "message": "llm_generate_complete", "data": {"session_id": self.session_id, "turn": num_turns, "llm_ms": int((_time.time() - _llm_start)*1000), "output_len": len(output.token_ids) if hasattr(output, 'token_ids') else 0}, "timestamp": int(_time.time()*1000)}) + "\n")
+                # #endregion
                 assert isinstance(output, TokenOutput), f"Expected TokenOutput, got {type(output)}"
                 
                 assert isinstance(output.token_ids, list)
