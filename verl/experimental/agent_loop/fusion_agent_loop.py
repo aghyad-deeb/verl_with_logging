@@ -452,9 +452,10 @@ class FusionAgentLoop(AgentLoopBase):
                 assert isinstance(curr_input[-1], int)
                 
                 # Generate from LLM
-                output = await self.server_manager.generate(
-                    request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
-                )
+                with simple_timer("generate_sequences", metrics):
+                    output = await self.server_manager.generate(
+                        request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
+                    )
                 assert isinstance(output, TokenOutput), f"Expected TokenOutput, got {type(output)}"
                 
                 assert isinstance(output.token_ids, list)
@@ -491,7 +492,8 @@ class FusionAgentLoop(AgentLoopBase):
                     cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
                     fetched_files = np.array({})
                 else:
-                    cmd_output, fetched_files = await self.execute_agent_command(cmd)
+                    with simple_timer("tool_calls", metrics):
+                        cmd_output, fetched_files = await self.execute_agent_command(cmd)
                 
                 # Format tool response
                 cmd_message = [{"role": "tool", "content": cmd_output}]
