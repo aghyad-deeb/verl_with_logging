@@ -14,7 +14,6 @@
 
 import logging
 import time
-import asyncio 
 
 import ray
 from ray.util.collective import collective

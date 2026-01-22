@@ -11,90 +11,99 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""
+Fusion Agent Loop - Stateful bash execution via centralized session server.
+
+This agent loop communicates with a SweRex Session Server via HTTP to execute
+bash commands with true statefulness (cd, exports, variables persist).
+
+Key benefits:
+- True statefulness (no command replay needed)
+- No local pool management
+- No Ray worker detection needed  
+- Single point of configuration (server URL)
+- Server handles load balancing, health checks, fault tolerance
+
+Environment variables:
+    SWEREX_SERVER_URL: Session server URL (default: http://localhost:8080)
+"""
+
+import base64
+import json
 import logging
 import os
-import base64
-import numpy as np
+from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import uuid4
+
+import aiohttp
+import numpy as np
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.workers.rollout.replica import TokenOutput
 from verl.utils.profiler import simple_timer
 
-# Official SandboxFusion SDK - provides built-in retries, async support, proper error handling
-from sandbox_fusion import (
-    run_code_async,
-    run_code,
-    RunCodeRequest,
-    RunCodeResponse,
-    RunStatus,
-    set_endpoint,
-)
-
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-# Default configuration
-SANDBOX_ENDPOINT = os.getenv("SANDBOX_FUSION_ENDPOINT", "http://localhost:60808")
-SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "5"))
-SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "5"))
-SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "1"))
-SANDBOX_HEALTH_CHECK_MAX_RETRIES = int(os.getenv("SANDBOX_HEALTH_CHECK_MAX_RETRIES", "5"))
+# =============================================================================
+# Configuration
+# =============================================================================
 
-# Track if health check has been done (class-level, once per process)
-_health_check_done = False
+SWEREX_SERVER_URL = os.getenv("SWEREX_SERVER_URL", "http://localhost:8080")
+SWEREX_REQUEST_TIMEOUT = float(os.getenv("SWEREX_REQUEST_TIMEOUT", "120"))
+SWEREX_COMMAND_TIMEOUT = float(os.getenv("SWEREX_COMMAND_TIMEOUT", "30"))
 
-def check_server_running(force: bool = False) -> bool:
-    """Check if sandbox server is running using the official SDK with exponential backoff.
-    
-    This is a one-time check per process to avoid thundering herd when
-    many workers initialize simultaneously in distributed training.
-    
-    Args:
-        force: If True, always perform the check even if already done.
-        
-    Returns:
-        True if server is running, raises RuntimeError otherwise.
-    """
-    global _health_check_done
-    
-    # Skip if already checked (unless forced)
-    if _health_check_done and not force:
-        return True
-    
-    try:
-        result = run_code(
-            RunCodeRequest(code='echo "health_check"', language='bash', run_timeout=2),
-            endpoint=SANDBOX_ENDPOINT,
-            max_attempts=SANDBOX_HEALTH_CHECK_MAX_RETRIES,
-            client_timeout=5
+# =============================================================================
+# HTTP Client
+# =============================================================================
+
+# Module-level client session (reused across requests)
+_client_session: Optional[aiohttp.ClientSession] = None
+
+
+async def get_client() -> aiohttp.ClientSession:
+    """Get or create the shared HTTP client session."""
+    global _client_session
+    if _client_session is None or _client_session.closed:
+        _client_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=SWEREX_REQUEST_TIMEOUT),
+            connector=aiohttp.TCPConnector(limit=100),
         )
-        _health_check_done = True
-        return result.status == RunStatus.Success
-    except Exception as e:
-        raise RuntimeError(
-            f"Sandbox server is not running at '{SANDBOX_ENDPOINT}'. "
-            f"Start it with: docker run -it -p 60808:8080 volcengine/sandbox-fusion:server-20250609"
-        ) from e
+    return _client_session
+
+
+@dataclass
+class CommandResult:
+    """Result from command execution."""
+    status: str
+    stdout: str
+    stderr: str
+    return_code: int
+
+
+# =============================================================================
+# HTTP Agent Loop
+# =============================================================================
 
 
 @register("fusion_agent_loop")
 class FusionAgentLoop(AgentLoopBase):
     """
-    Agent loop with bash sandbox execution using the official SandboxFusion SDK.
+    Agent loop with stateful bash execution via centralized session server.
     
-    Features:
-    - Built-in retry logic (configurable via SANDBOX_MAX_RETRIES env var)
-    - Native async support for better performance
-    - Proper timeout handling (configurable via SANDBOX_CLIENT_TIMEOUT, SANDBOX_RUN_TIMEOUT)
-    - Statefulness via command history replay
+    This agent loop communicates with a SweRex Session Server via HTTP.
+    The server manages the pool of containers and sessions, handles load
+    balancing, health checks, and fault tolerance.
+    
+    Key features:
+    - True statefulness (cd, exports, variables persist across commands)
+    - No local pool management (server handles everything)
+    - No Ray worker detection (server handles load balancing)
+    - Simple HTTP calls to acquire/execute/release
     
     Environment variables:
-    - SANDBOX_FUSION_ENDPOINT: Sandbox server URL (default: http://localhost:60808)
-    - SANDBOX_MAX_RETRIES: Max retry attempts for failed requests (default: 5)
-    - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 30)
-    - SANDBOX_RUN_TIMEOUT: Code execution timeout in seconds (default: 10)
+        SWEREX_SERVER_URL: Session server URL (default: http://localhost:8080)
     """
     
     def __init__(self, *args, **kwargs):
@@ -103,17 +112,96 @@ class FusionAgentLoop(AgentLoopBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
         
-        # SDK configuration
-        self.endpoint = SANDBOX_ENDPOINT
-        self.max_retries = SANDBOX_MAX_RETRIES
-        self.client_timeout = SANDBOX_CLIENT_TIMEOUT
-        self.run_timeout = SANDBOX_RUN_TIMEOUT
+        # Server configuration
+        self.server_url = SWEREX_SERVER_URL
         
-        # Set global endpoint for SDK
-        set_endpoint(self.endpoint)
+        # Session state (set during run())
+        self.session_id: Optional[str] = None
         
-
-    def flatten_structure(self, fs_list, prefix=""):
+        # Files and configuration (set during run())
+        self.files: dict = {}
+        self.files_to_fetch: list = []
+    
+    # =========================================================================
+    # HTTP Operations
+    # =========================================================================
+    
+    async def _acquire_session(
+        self,
+        files: Optional[dict[str, str]] = None,
+        startup_commands: Optional[list[str]] = None,
+    ) -> str:
+        """Acquire a session from the server."""
+        client = await get_client()
+        
+        payload = {}
+        if files:
+            payload["files"] = files
+        if startup_commands:
+            payload["startup_commands"] = startup_commands
+        
+        async with client.post(
+            f"{self.server_url}/session/acquire",
+            json=payload,
+        ) as resp:
+            if resp.status != 200:
+                error = await resp.text()
+                raise RuntimeError(f"Failed to acquire session: {resp.status} - {error}")
+            data = await resp.json()
+            return data["session_id"]
+    
+    async def _execute_command(
+        self,
+        command: str,
+        timeout: float = SWEREX_COMMAND_TIMEOUT,
+    ) -> CommandResult:
+        """Execute a command via the server."""
+        assert self.session_id is not None, "Session not acquired"
+        
+        client = await get_client()
+        
+        async with client.post(
+            f"{self.server_url}/session/{self.session_id}/execute",
+            json={"command": command, "timeout": timeout},
+        ) as resp:
+            if resp.status != 200:
+                error = await resp.text()
+                return CommandResult(
+                    status="Failed",
+                    stdout="",
+                    stderr=f"HTTP error {resp.status}: {error}",
+                    return_code=-1,
+                )
+            data = await resp.json()
+            return CommandResult(
+                status=data["status"],
+                stdout=data["stdout"],
+                stderr=data["stderr"],
+                return_code=data["return_code"],
+            )
+    
+    async def _release_session(self) -> None:
+        """Release the session back to the server."""
+        if not self.session_id:
+            return
+        
+        try:
+            client = await get_client()
+            async with client.post(
+                f"{self.server_url}/session/{self.session_id}/release"
+            ) as resp:
+                pass  # Ignore response on release
+        except Exception as e:
+            logger.warning(f"Failed to release session {self.session_id}: {e}")
+        finally:
+            self.session_id = None
+    
+    # =========================================================================
+    # Agent Loop Methods
+    # =========================================================================
+    
+    def flatten_structure(self, fs_list: list, prefix: str = "") -> dict:
+        """Flatten nested file structure to flat dict of path -> base64 content."""
         files = {}
         for item in fs_list:
             path = f"{prefix}/{item['name']}" if prefix else item['name']
@@ -122,21 +210,24 @@ class FusionAgentLoop(AgentLoopBase):
             else:
                 files.update(self.flatten_structure(item['content'], path))
         return files
-
-    def extract_bash_command(self, text, prefix="<bash>", suffix="</bash>"):
+    
+    def extract_bash_command(
+        self, 
+        text: str, 
+        prefix: str = "<bash>", 
+        suffix: str = "</bash>"
+    ) -> Optional[str]:
+        """Extract bash command from model output."""
         assert isinstance(text, str), f"text must be a string, got {type(text)}"
-        assert isinstance(prefix, str), f"prefix must be a string, got {type(prefix)}"
-        assert isinstance(suffix, str), f"suffix must be a string, got {type(suffix)}"
-        assert len(prefix) > 0, "prefix cannot be empty"
-        assert len(suffix) > 0, "suffix cannot be empty"
+        
+        # Skip thinking tags
         eot = "</think>"
         if eot in text:
             text = text.split(eot)[-1]
-        # if eot not in s:
-        #     return None
+        
         if prefix not in text:
             return None
-
+        
         after_prefix = text.split(prefix)[-1]
         i = -1
         while suffix not in after_prefix:
@@ -144,356 +235,232 @@ class FusionAgentLoop(AgentLoopBase):
             if len(text.split(prefix)) < abs(i):
                 break
             after_prefix = text.split(prefix)[i]
-
+        
         if suffix not in after_prefix:
             return None
-
+        
         ret = after_prefix.split(suffix)[0]
         if ret.startswith("\n"):
             ret = ret[1:]
         return ret
-
-    async def is_valid_bash_syntax(self, code: str) -> bool:
-        """Check if command has valid bash syntax using bash -n in sandbox.
-        
-        Uses the SDK's async interface with minimal retries for validation.
-        """
-        script_b64 = base64.b64encode(code.encode()).decode()
-        try:
-            result = await run_code_async(
-                RunCodeRequest(
-                    code='bash -n __validate_cmd.sh',
-                    language='bash',
-                    run_timeout=2,
-                    files={'__validate_cmd.sh': script_b64},
-                ),
-                endpoint=self.endpoint,
-                max_attempts=5,  # Fewer retries for validation
-                client_timeout=5
-            )
-            # Check both top-level status and run_result return_code
-            if result.status != RunStatus.Success:
-                return False
-            return result.run_result is not None and result.run_result.return_code == 0
-        except Exception as e:
-            logger.debug(f"Bash syntax validation failed: {e}")
-            return False
-
-    def has_junk_artifacts(self, code):
-        """Check for markdown/XML artifacts that crash sandbox."""
-        junk_patterns = ['```', '<output>', '</output>', '<answer>', '</answer>',
-                         '<code>', '</code>', '<text>', '</text>']
-        return any(p in code for p in junk_patterns)
-
-    async def send_bash_command(
-        self, 
-        code: str, 
-        files: Optional[dict] = None, 
-        files_to_fetch: Optional[list] = None,
-        skip_validation: bool = False
-    ) -> dict:
-        """Execute bash command using the official SandboxFusion SDK.
-        
-        Args:
-            code: The bash code to execute
-            files: Dict of filename -> base64-encoded content
-            files_to_fetch: List of file paths to retrieve after execution
-            skip_validation: Skip syntax validation (for pre-validated commands)
-            
-        Returns:
-            Dict with status, run_result, and files
-        """
-        files = files or {}
-        files_to_fetch = files_to_fetch or []
-        
-        # Validate command before sending
-        if self.has_junk_artifacts(code):
-            return {"status": "Failed", "run_result": {"stderr": "Command contains invalid artifacts"}}
-
-        if not skip_validation and not await self.is_valid_bash_syntax(code):
-            return {"status": "Failed", "run_result": {"stderr": "Invalid bash syntax"}}
-
-        try:
-            result = await run_code_async(
-                RunCodeRequest(
-                    code=code,
-                    language='bash',
-                    run_timeout=self.run_timeout,
-                    files=files,
-                    fetch_files=files_to_fetch,
-                ),
-                endpoint=self.endpoint,
-                max_attempts=self.max_retries,
-                client_timeout=self.client_timeout
-            )
-            
-            # Convert SDK response to dict format for backward compatibility
-            return {
-                "status": result.status.value,  # "Success", "Failed", or "SandboxError"
-                "message": result.message,
-                "run_result": {
-                    "status": result.run_result.status.value if result.run_result else None,
-                    "stdout": result.run_result.stdout if result.run_result else "",
-                    "stderr": result.run_result.stderr if result.run_result else "",
-                    "return_code": result.run_result.return_code if result.run_result else None,
-                    "execution_time": result.run_result.execution_time if result.run_result else None,
-                } if result.run_result else {},
-                "files": result.files or {},
-            }
-        except Exception as e:
-            logger.error(f"Sandbox execution failed after {self.max_retries} retries: {e}")
-            return {
-                "status": "Failed",
-                "run_result": {"stderr": f"Sandbox error: {str(e)}"},
-                "files": {}
-            }
-
-    def decode_fetched_files(self, resp_json):
-        import base64
-        try:
-            out_dict = dict()
-            if  "files" not in resp_json:
-                return np.array(dict())
-            for k, v in resp_json["files"].items():
-                out_dict[k] = base64.b64decode(v).decode('utf-8')
-            # transform into numpy as DataProto expects arrays
-            return np.array(out_dict)
-        except Exception as e:
-            print(f"Failed to decode file. {e=}")
-            return np.array({})
-
-    def create_command_output(self, result):
-        if "status" not in result:
-            print(f"status no in result. {result=}")
-        if result.get("status", "") == "Success":
-            return f"{result['run_result']['stdout']}"
+    
+    def _create_output_string(self, result: CommandResult) -> str:
+        """Create output string from command result."""
+        if result.status == "Success":
+            return result.stdout
         else:
-            if "run_result" in result and "stderr" in result.get("run_result", ""):
-                return f"Execution Failed: {result['run_result']['stderr']}"
+            if result.stderr:
+                return f"Execution Failed: {result.stderr}"
             else:
-                print(f"\n\n\n\nExecution failed without std Err: {result=}\n\n\n\n")
-                return f"Execution Failed: {result=}"
-
-    async def execute_agent_command(self, agent_command: str) -> tuple:
-        """Execute a command from the agent with full history replay for statefulness.
+                return f"Execution Failed: exit code {result.return_code}"
+    
+    async def execute_agent_command(self, command: str) -> tuple:
+        """
+        Execute a bash command with true statefulness.
         
-        This implements statefulness by replaying the entire command history before
-        executing the new command. This ensures that:
-        - Directory changes (cd) persist
-        - Environment variables (export) persist
-        - Shell variables persist
-        - File system changes persist
+        Unlike FusionAgentLoop which replays all previous commands,
+        this just executes the single command via the session server.
+        State (cd, export, variables) naturally persists.
         
         Args:
-            agent_command: The bash command to execute
+            command: The bash command to execute
             
         Returns:
-            Tuple of (command_output_string, fetched_files_array)
+            Tuple of (output_string, fetched_files_array)
         """
-        if self.command_history:
-            # Replay entire history as a script
-            state_script = "\n".join(self.command_history)
-
-            # Put script in a file to avoid heredoc/quoting issues
-            state_script_b64 = base64.b64encode(state_script.encode()).decode()
-
-            files = self.files.copy()
-            files['__replay_state.sh'] = state_script_b64
-
-            full_command = f"""source __replay_state.sh &> /dev/null
-{agent_command}"""
-        else:
-            # First command, no history
-            files = self.files
-            full_command = agent_command
-
-        # Use async SDK call directly (no run_in_executor needed)
-        result = await self.send_bash_command(
-            full_command, 
-            files=files, 
-            files_to_fetch=self.files_to_fetch,
-            skip_validation=False  # Still validate the full command
-        )
-
-        # Add to history if execution succeeded
-        if result.get('status') == "Success":
-            self.command_history.append(agent_command)
-
-        fetched_files = self.decode_fetched_files(result)
-
-        return self.create_command_output(result), fetched_files
-
+        result = await self._execute_command(command)
+        output = self._create_output_string(result)
+        
+        # TODO: Implement file fetching if needed
+        fetched_files = np.array({})
+        
+        return output, fetched_files
+    
+    def _is_dangerous_command(self, cmd: str) -> bool:
+        """Check if command contains dangerous patterns."""
+        dangerous_patterns = [
+            # Process/system killing
+            "pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff",
+            # Destructive
+            "rm -rf /", ":(){ :|:& };:",
+            # Privilege escalation
+            "sudo",
+            # Infinite loops (crash sandbox)
+            "while true", "while :", "for ((",
+            # Arbitrary code execution
+            "exec(", "eval(",
+            # Malicious intent
+            "malware", "exploit", "payload",
+            # Credential/system access
+            "contact_server", "/var/run/",
+            # Destructive scripts
+            "destroy",
+            # Network scanning/recon
+            "nmap", "netcat", " nc ",
+            # Piped shell execution
+            "| sh", "| bash",
+            # Hidden directory execution
+            "/.config/", "/.local/",
+            # Temp directory execution
+            "/tmp/mutation/",
+            # Shell spawning
+            "$SHELL",
+            # Binary compilation (hide malicious code)
+            "nuitka",
+            # External IP requests (data exfiltration)
+            "curl -X POST http://",
+            # Undefined suspicious functions
+            "readd_bash_add",
+            # Interactive input (HANGS sandbox waiting for user)
+            "read -p",
+            # Network commands
+            "ping ", "ping\t",
+            # Root filesystem search (slow/heavy)
+            "find /",
+            # Device reads (slow/hang)
+            "/dev/urandom", "/dev/random", "/dev/zero",
+            # Malformed input that crashes sandbox
+            "```",
+            # Blocking commands
+            "tail -f", "watch ",
+        ]
+        return any(pattern in cmd for pattern in dangerous_patterns)
+    
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        # NOTE: Health check removed - SDK retries handle failures gracefully
-
-        assert "tools_kwargs" in kwargs
-        import json
-        self.tools_kwargs=json.loads(kwargs["tools_kwargs"])
-        assert  "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
-        self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", [])
-        startup_commands = self.tools_kwargs.get("startup_commands", [])
-        files_dict = self.tools_kwargs["files_dict"]
-        assert isinstance(files_dict, list), f"{files_dict=}"
+        """
+        Run the agent loop for one episode.
+        
+        This method:
+        1. Acquires a session from the server
+        2. Writes initial files and runs startup commands (via server)
+        3. Runs the multi-turn agent loop
+        4. Releases the session back to the server
+        """
+        # Parse tools_kwargs
+        assert "tools_kwargs" in kwargs, "tools_kwargs required"
+        tools_kwargs = json.loads(kwargs["tools_kwargs"])
+        assert "files_dict" in tools_kwargs, "files_dict required in tools_kwargs"
+        
+        self.files_to_fetch = tools_kwargs.get("files_to_fetch", [])
+        startup_commands = tools_kwargs.get("startup_commands", [])
+        files_dict = tools_kwargs["files_dict"]
+        assert isinstance(files_dict, list), f"files_dict must be list, got {type(files_dict)}"
         self.files = self.flatten_structure(files_dict)
-
+        
+        # Acquire session from server
+        self.session_id = await self._acquire_session(
+            files=self.files if self.files else None,
+            startup_commands=startup_commands if startup_commands else None,
+        )
+        
+        try:
+            return await self._run_episode(sampling_params, **kwargs)
+        finally:
+            # Always release session back to server
+            await self._release_session()
+    
+    async def _run_episode(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
+        """Run the multi-turn agent loop for one episode."""
         messages = list(kwargs["raw_prompt"])
-        # Track full conversation for logging
         conversation_messages = [dict(msg) for msg in messages]
         metrics = {}
-        # empty command history for each run
-        self.command_history = startup_commands
+        
         request_id = uuid4().hex
         num_turns = 0
         max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
-        mask = list()
+        mask = []
+        
+        # Tokenize initial prompt
         prompt_ids = await self.loop.run_in_executor(
             None,
             lambda: self.tokenizer.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
             ),
         )
-        # Commented as response mask shouldn't include the prompt
-        # mask += [0] * len(prompt_ids)
-        curr_input = [tok for tok in prompt_ids]
-        all_output_with_tool = list()
-        import numpy as np
-        fetched_files = np.array(dict())
+        
+        curr_input = list(prompt_ids)
+        all_output_with_tool = []
+        fetched_files = np.array({})
+        
         with simple_timer("generate_sequences_all_turns", metrics):
             while num_turns < max_num_turns:
-                # Use processor if available for multimodal support
                 assert len(curr_input) > 0
                 assert isinstance(curr_input, list)
                 assert isinstance(curr_input[-1], int)
-
-                # if len(curr_input) >
+                
+                # Generate from LLM
                 output = await self.server_manager.generate(
                     request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
                 )
-                #! This will fail but we'll get to know the type
-                assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
-                #! Edit once figured out
-                # output_tokens = [output.token_ids
-                # TODO next: figure out problem with wandb api key,find the type of output,
-
+                assert isinstance(output, TokenOutput), f"Expected TokenOutput, got {type(output)}"
+                
                 assert isinstance(output.token_ids, list)
-                assert isinstance(output.token_ids[0], int) #! will fail if len is 0, but shouldn't ever be
+                assert len(output.token_ids) > 0, "Empty output from LLM"
+                
                 all_output_with_tool += output.token_ids
                 mask += [1] * len(output.token_ids)
+                
+                # Decode output
                 decoded_output = await self.loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.decode(output.token_ids)
                 )
-                # Track assistant message for logging
+                
                 conversation_messages.append({
                     "role": "assistant",
                     "content": decoded_output
                 })
+                
+                # Extract bash command
                 cmd = await self.loop.run_in_executor(
                     None,
                     lambda: self.extract_bash_command(decoded_output)
                 )
-
-                # if agent doesn't output a command, we exit the loop
+                
+                # If no command, exit loop
                 if cmd is None:
                     break
-
+                
                 curr_input += output.token_ids
-
-                # Check for dangerous commands that could kill the environment
-                dangerous_patterns = [
-                    # Process/system killing
-                    "pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff",
-                    # Destructive
-                    "rm -rf /", ":(){ :|:& };:",
-                    # Privilege escalation
-                    "sudo",
-                    # Infinite loops (crash sandbox)
-                    "while true", "while :", "for ((",
-                    # Arbitrary code execution
-                    "exec(", "eval(",
-                    # Malicious intent
-                    "malware", "exploit", "payload",
-                    # Credential/system access
-                    "contact_server", "/var/run/",
-                    # Destructive scripts
-                    "destroy",
-                    # Network scanning/recon
-                    "nmap", "netcat", " nc ",
-                    # Piped shell execution
-                    "| sh", "| bash",
-                    # Hidden directory execution
-                    "/.config/", "/.local/",
-                    # Temp directory execution
-                    "/tmp/mutation/",
-                    # Shell spawning
-                    "$SHELL",
-                    # Binary compilation (hide malicious code)
-                    "nuitka",
-                    # External IP requests (data exfiltration)
-                    "curl -X POST http://",
-                    # Undefined suspicious functions
-                    "readd_bash_add",
-                    # Interactive input (HANGS sandbox waiting for user)
-                    "read -p",
-                    # Network commands
-                    "ping ", "ping\t",
-                    # Root filesystem search (slow/heavy)
-                    "find /",
-                    # Device reads (slow/hang)
-                    "/dev/urandom", "/dev/random", "/dev/zero",
-                    # Malformed input that crashes sandbox
-                    "```",
-                    # Blocking commands
-                    "tail -f", "watch ",
-                ]
-                is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
-
-                if is_dangerous:
-                    # Return realistic permission error instead of executing
+                
+                # Execute command (with safety check)
+                if self._is_dangerous_command(cmd):
                     cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
-                    fetched_files = np.array(dict())
+                    fetched_files = np.array({})
                 else:
-                    # Use native async - no run_in_executor needed with SDK
                     cmd_output, fetched_files = await self.execute_agent_command(cmd)
-                cmd_message = [{
-                    "role": "tool",
-                    "content": cmd_output
-                }]
-                # Track tool message for logging
-                conversation_messages.append({
-                    "role": "tool",
-                    "content": cmd_output
-                })
+                
+                # Format tool response
+                cmd_message = [{"role": "tool", "content": cmd_output}]
+                conversation_messages.append({"role": "tool", "content": cmd_output})
+                
                 cmd_message_ids = await self.loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.apply_chat_template(
-                        cmd_message, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                        cmd_message, add_generation_prompt=True, tokenize=True, 
+                        **self.apply_chat_template_kwargs
                     ),
                 )
+                
                 curr_input += cmd_message_ids
                 all_output_with_tool += cmd_message_ids
                 mask += [0] * len(cmd_message_ids)
+                
                 if len(mask) >= self.response_length:
                     break
-
+                
                 num_turns += 1
-
-        # response_mask = [1] * len(output.token_ids)
-        assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
-        mask = mask[: self.response_length]
-        all_output_with_tool = all_output_with_tool[: self.response_length]
-        assert len(mask) == len(all_output_with_tool), f"{len(mask)=}, {len(all_output_with_tool)=}, {mask=}\n{all_output_with_tool=}"
-
-        assert isinstance(fetched_files, np.ndarray)
-        output = AgentLoopOutput(
+        
+        # Truncate to response_length
+        assert len(mask) == len(all_output_with_tool)
+        mask = mask[:self.response_length]
+        all_output_with_tool = all_output_with_tool[:self.response_length]
+        
+        return AgentLoopOutput(
             prompt_ids=prompt_ids[:self.prompt_length],
-            # prompt_ids=,
-            response_ids=all_output_with_tool[: self.response_length],
-            # response_ids=, #! I don't think I want these here
-            response_mask=mask[: self.response_length],
-            # response_mask=response_mask[: self.response_length],
-            response_logprobs=output.log_probs[: self.response_length] if output.log_probs else None,
-            # response_logprobs=,
+            response_ids=all_output_with_tool[:self.response_length],
+            response_mask=mask[:self.response_length],
+            response_logprobs=output.log_probs[:self.response_length] if output.log_probs else None,
             num_turns=num_turns,
             metrics=metrics,
             extra_fields=dict(
@@ -501,4 +468,3 @@ class FusionAgentLoop(AgentLoopBase):
                 messages=conversation_messages,
             )
         )
-        return output
