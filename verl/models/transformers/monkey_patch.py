@@ -304,7 +304,7 @@ def apply_monkey_patch(
             return torch.nn.Module.state_dict(self, *args, **kwargs)
 
         AutoModelForCausalLMWithValueHead.state_dict = state_dict
-        # Note: This patches the class definition preemptively, doesn't mean value head is being used
+        print("Monkey patch state_dict in AutoModelForCausalLMWithValueHead. ")
 
     # TODO: VLM models only, unify monkey patch to LLM models.
     if model.config.model_type in ["qwen2_5_vl", "qwen2_vl"]:
@@ -438,31 +438,7 @@ def apply_monkey_patch(
 
         return
 
-    # Apply attention sink if requested
-    if use_attention_sink:
-        attention_sink_config = attention_sink_config or {}
-        enable_learned_sinks = attention_sink_config.get("enable_learned_sinks", False)
-        bandwidth = attention_sink_config.get("bandwidth", 0)
-        sink_init_value = attention_sink_config.get("sink_init_value", 0.0)
-        
-        from verl.models.transformers.attention_sink import create_attention_sink_forward
-        
-        attention_sink_fn = create_attention_sink_forward(
-            num_attention_heads=num_attention_heads,
-            num_key_value_heads=num_key_value_heads,
-            enable_learned_sinks=enable_learned_sinks,
-            bandwidth=bandwidth,
-            sink_init_value=sink_init_value,
-        )
-        
-        if hasattr(module, "_flash_attention_forward"):
-            module._flash_attention_forward = attention_sink_fn
-            print(f"Monkey patch _flash_attention_forward with AttentionSink in {model.__module__}")
-        else:
-            from transformers.integrations import flash_attention
-            flash_attention._flash_attention_forward = attention_sink_fn
-            print(f"Monkey patch _flash_attention_forward with AttentionSink in {flash_attention.__name__}")
-    elif use_remove_padding or ulysses_sp_size > 1:
+    if use_remove_padding or ulysses_sp_size > 1:
         if hasattr(module, "_flash_attention_forward"):  # transformers <= 4.47.1 or legacy models
             module._flash_attention_forward = _ulysses_flash_attention_forward
             print(f"Monkey patch _flash_attention_forward in {model.__module__}")
