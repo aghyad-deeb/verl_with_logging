@@ -77,6 +77,9 @@ def check_server_running(url: str = None) -> bool:
 SWEREX_SERVER_URL = os.getenv("SWEREX_SERVER_URL", "http://localhost:8180")
 SWEREX_REQUEST_TIMEOUT = float(os.getenv("SWEREX_REQUEST_TIMEOUT", "120"))
 SWEREX_COMMAND_TIMEOUT = float(os.getenv("SWEREX_COMMAND_TIMEOUT", "30"))
+# Client-side rate limiting: max concurrent acquire requests per process
+# This prevents overwhelming the server when many agent loops run in parallel
+SWEREX_MAX_CONCURRENT_ACQUIRE = int(os.getenv("SWEREX_MAX_CONCURRENT_ACQUIRE", "32"))
 
 # =============================================================================
 # HTTP Client
@@ -84,6 +87,17 @@ SWEREX_COMMAND_TIMEOUT = float(os.getenv("SWEREX_COMMAND_TIMEOUT", "30"))
 
 # Module-level client session (reused across requests)
 _client_session: Optional[aiohttp.ClientSession] = None
+# Module-level semaphore for rate-limiting acquire requests
+_acquire_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_acquire_semaphore() -> asyncio.Semaphore:
+    """Get or create the shared acquire semaphore for rate limiting."""
+    global _acquire_semaphore
+    if _acquire_semaphore is None:
+        _acquire_semaphore = asyncio.Semaphore(SWEREX_MAX_CONCURRENT_ACQUIRE)
+        logger.info(f"Initialized client-side acquire rate limiter: max {SWEREX_MAX_CONCURRENT_ACQUIRE} concurrent")
+    return _acquire_semaphore
 
 
 async def get_client() -> aiohttp.ClientSession:
@@ -92,7 +106,8 @@ async def get_client() -> aiohttp.ClientSession:
     if _client_session is None or _client_session.closed:
         _client_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=SWEREX_REQUEST_TIMEOUT),
-            connector=aiohttp.TCPConnector(limit=100),
+            # Limit concurrent connections to match our acquire rate limit
+            connector=aiohttp.TCPConnector(limit=SWEREX_MAX_CONCURRENT_ACQUIRE * 2),
         )
     return _client_session
 
@@ -156,39 +171,54 @@ class FusionAgentLoop(AgentLoopBase):
         files: Optional[dict[str, str]] = None,
         startup_commands: Optional[list[str]] = None,
     ) -> str:
-        """Acquire a session from the server."""
+        """Acquire a session from the server.
+        
+        Uses client-side rate limiting to prevent overwhelming the server
+        with too many concurrent acquire requests.
+        """
         # #region agent log
         import time as _time; import os as _os; _log_path = "./tmp/fusion_debug.log"; _os.makedirs(_os.path.dirname(_log_path), exist_ok=True); _acq_start = _time.time(); _payload_size = len(json.dumps({"files": files} if files else {})); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:start", "message": "acquire_session_start", "data": {"payload_size_bytes": _payload_size, "num_files": len(files) if files else 0, "server_url": self.server_url}, "timestamp": int(_time.time()*1000)}) + "\n")
         # #endregion
-        client = await get_client()
         
-        payload = {}
-        if files:
-            payload["files"] = files
-        if startup_commands:
-            payload["startup_commands"] = startup_commands
-        
+        # Rate limit: acquire semaphore before making HTTP request
+        semaphore = _get_acquire_semaphore()
         # #region agent log
-        _http_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "B", "location": "fusion_agent_loop.py:_acquire_session:http_start", "message": "http_post_starting", "data": {"time_to_get_client_ms": int((_http_start - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+        _sem_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "F_client_ratelimit", "location": "fusion_agent_loop.py:_acquire_session:sem_wait", "message": "waiting_for_client_semaphore", "data": {}, "timestamp": int(_time.time()*1000)}) + "\n")
         # #endregion
-        async with client.post(
-            f"{self.server_url}/session/acquire",
-            json=payload,
-        ) as resp:
+        async with semaphore:
             # #region agent log
-            _http_end = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:http_done", "message": "http_post_completed", "data": {"http_duration_ms": int((_http_end - _http_start)*1000), "status": resp.status}, "timestamp": int(_time.time()*1000)}) + "\n")
+            _sem_acquired = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "F_client_ratelimit", "location": "fusion_agent_loop.py:_acquire_session:sem_acquired", "message": "client_semaphore_acquired", "data": {"semaphore_wait_ms": int((_sem_acquired - _sem_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
             # #endregion
-            if resp.status != 200:
-                error = await resp.text()
+            
+            client = await get_client()
+            
+            payload = {}
+            if files:
+                payload["files"] = files
+            if startup_commands:
+                payload["startup_commands"] = startup_commands
+            
+            # #region agent log
+            _http_start = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "B", "location": "fusion_agent_loop.py:_acquire_session:http_start", "message": "http_post_starting", "data": {"time_to_get_client_ms": int((_http_start - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+            # #endregion
+            async with client.post(
+                f"{self.server_url}/session/acquire",
+                json=payload,
+            ) as resp:
                 # #region agent log
-                open(_log_path, "a").write(json.dumps({"hypothesisId": "C", "location": "fusion_agent_loop.py:_acquire_session:error", "message": "acquire_failed", "data": {"status": resp.status, "error": error[:500]}, "timestamp": int(_time.time()*1000)}) + "\n")
+                _http_end = _time.time(); open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:http_done", "message": "http_post_completed", "data": {"http_duration_ms": int((_http_end - _http_start)*1000), "status": resp.status}, "timestamp": int(_time.time()*1000)}) + "\n")
                 # #endregion
-                raise RuntimeError(f"Failed to acquire session: {resp.status} - {error}")
-            data = await resp.json()
-            # #region agent log
-            open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:success", "message": "session_acquired", "data": {"session_id": data["session_id"], "total_duration_ms": int((_time.time() - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
-            # #endregion
-            return data["session_id"]
+                if resp.status != 200:
+                    error = await resp.text()
+                    # #region agent log
+                    open(_log_path, "a").write(json.dumps({"hypothesisId": "C", "location": "fusion_agent_loop.py:_acquire_session:error", "message": "acquire_failed", "data": {"status": resp.status, "error": error[:500]}, "timestamp": int(_time.time()*1000)}) + "\n")
+                    # #endregion
+                    raise RuntimeError(f"Failed to acquire session: {resp.status} - {error}")
+                data = await resp.json()
+                # #region agent log
+                open(_log_path, "a").write(json.dumps({"hypothesisId": "A", "location": "fusion_agent_loop.py:_acquire_session:success", "message": "session_acquired", "data": {"session_id": data["session_id"], "total_duration_ms": int((_time.time() - _acq_start)*1000)}, "timestamp": int(_time.time()*1000)}) + "\n")
+                # #endregion
+                return data["session_id"]
     
     async def _execute_command(
         self,
