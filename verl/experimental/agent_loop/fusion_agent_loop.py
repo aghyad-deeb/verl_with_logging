@@ -390,9 +390,10 @@ class FusionAgentLoop(AgentLoopBase):
                     assert isinstance(curr_input, list)
                     assert isinstance(curr_input[-1], int)
 
-                    output = await self.server_manager.generate(
-                        request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
-                    )
+                    with simple_timer("generate_sequences", metrics):
+                        output = await self.server_manager.generate(
+                            request_id=request_id, prompt_ids=curr_input, sampling_params=sampling_params
+                        )
                     assert isinstance(output, TokenOutput), f"{type(output)=}, {output=}"
                     assert isinstance(output.token_ids, list)
                     assert isinstance(output.token_ids[0], int)
@@ -455,7 +456,8 @@ class FusionAgentLoop(AgentLoopBase):
                         cmd_output = "Command contains invalid artifacts"
                         fetched_files = np.array(dict())
                     else:
-                        cmd_output, fetched_files = await self.execute_agent_command(cmd)
+                        with simple_timer("tool_calls", metrics):
+                            cmd_output, fetched_files = await self.execute_agent_command(cmd)
                     
                     cmd_message = [{
                         "role": "tool",
