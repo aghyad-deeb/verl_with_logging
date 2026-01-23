@@ -440,20 +440,23 @@ class FusionAgentLoop(AgentLoopBase):
         # Create a new session for this episode
         # Generate session_id client-side for consistent hashing across multiple containers
         session_id = uuid4().hex
-        try:
-            self.current_session_id = await self.session_client.create_session(
-                session_id=session_id,
-                files=files,
-                startup_commands=startup_commands,
-            )
-        except Exception as e:
-            logger.error(f"Failed to create session: {e}")
-            raise
+        metrics = {}
+        
+        with simple_timer("session_create", metrics):
+            try:
+                self.current_session_id = await self.session_client.create_session(
+                    session_id=session_id,
+                    files=files,
+                    startup_commands=startup_commands,
+                )
+            except Exception as e:
+                logger.error(f"Failed to create session: {e}")
+                raise
 
         try:
             messages = list(kwargs["raw_prompt"])
             conversation_messages = [dict(msg) for msg in messages]
-            metrics = {}
+            metrics["tool_calls_count"] = 0
             request_id = uuid4().hex
             num_turns = 0
             max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
@@ -544,6 +547,7 @@ class FusionAgentLoop(AgentLoopBase):
                     else:
                         with simple_timer("tool_calls", metrics):
                             cmd_output, fetched_files = await self.execute_agent_command(cmd)
+                        metrics["tool_calls_count"] = metrics.get("tool_calls_count", 0) + 1
                     
                     cmd_message = [{
                         "role": "tool",
@@ -580,16 +584,17 @@ class FusionAgentLoop(AgentLoopBase):
             # Final file fetch - ensure we get the requested files even if the last
             # command was blocked or had issues
             if self.files_to_fetch and self.current_session_id:
-                try:
-                    final_result = await self.session_client.run_command(
-                        session_id=self.current_session_id,
-                        command="true",  # No-op command just to trigger file fetch
-                        timeout=5,
-                        fetch_files=self.files_to_fetch,
-                    )
-                    fetched_files = self.decode_fetched_files(final_result.get("files", {}))
-                except Exception as e:
-                    logger.warning(f"Final file fetch failed: {e}")
+                with simple_timer("final_file_fetch", metrics):
+                    try:
+                        final_result = await self.session_client.run_command(
+                            session_id=self.current_session_id,
+                            command="true",  # No-op command just to trigger file fetch
+                            timeout=5,
+                            fetch_files=self.files_to_fetch,
+                        )
+                        fetched_files = self.decode_fetched_files(final_result.get("files", {}))
+                    except Exception as e:
+                        logger.warning(f"Final file fetch failed: {e}")
 
             assert isinstance(fetched_files, np.ndarray)
             
@@ -609,8 +614,10 @@ class FusionAgentLoop(AgentLoopBase):
         finally:
             # Always clean up the session at episode end
             if self.current_session_id:
-                await self.session_client.destroy_session(self.current_session_id)
+                with simple_timer("session_destroy", metrics):
+                    await self.session_client.destroy_session(self.current_session_id)
                 self.current_session_id = None
             # Close the HTTP client session to avoid "Unclosed client session" warnings
             if self.session_client:
-                await self.session_client.close()
+                with simple_timer("session_close_http", metrics):
+                    await self.session_client.close()
