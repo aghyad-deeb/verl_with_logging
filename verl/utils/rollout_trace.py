@@ -253,7 +253,7 @@ class JSONLLogBuffer:
             step = attributes.get("step")
             # If step changed, flush previous step's samples first
             if self._current_step is not None and step != self._current_step and self._samples:
-                print(f"[JSONL Buffer] Step changed from {self._current_step} to {step}, flushing {len(self._samples)} samples")
+                print(f"[JSONL Buffer] Step changed from {self._current_step} to {step}, flushing {len(self._samples)} samples", flush=True)
                 self._flush_internal()
             self._current_step = step
             # Generate unique ID combining step and UUID for easy identification
@@ -265,7 +265,7 @@ class JSONLLogBuffer:
                 "timestamp": datetime.now().isoformat(),
             })
             if len(self._samples) % 100 == 0:
-                print(f"[JSONL Buffer] Buffered {len(self._samples)} samples for step {step}")
+                print(f"[JSONL Buffer] Buffered {len(self._samples)} samples for step {step}", flush=True)
 
     def _flush_internal(self):
         """Write JSONL to S3. Must be called with lock held."""
@@ -409,7 +409,7 @@ class RolloutTraceConfig:
             config.client = None
 
         config._initialized = True
-        print(f"[RolloutTraceConfig] Initialized with backend={backend}, project={project_name}, experiment={experiment_name}")
+        print(f"[RolloutTraceConfig] Initialized with backend={backend}, project={project_name}, experiment={experiment_name}", flush=True)
 
     @classmethod
     def get_backend(cls) -> Optional[str]:
@@ -671,8 +671,10 @@ def rollout_trace_op(func):
             raw_prompt = inputs.get("raw_prompt")
             if not raw_prompt:
                 # Debug: print why we're skipping
-                print(f"[JSONL Trace] Skipping {func.__qualname__}, no raw_prompt in inputs. Keys: {list(inputs.keys())}")
+                print(f"[JSONL Trace] Skipping {func.__qualname__}, no raw_prompt in inputs. Keys: {list(inputs.keys())}", flush=True)
                 return result
+            else:
+                print(f"[JSONL Trace] Processing {func.__qualname__} with raw_prompt", flush=True)
 
             # Get current attributes from context (via helper function)
             attributes = _get_inspect_attributes().copy()
