@@ -671,7 +671,7 @@ def rollout_trace_op(func):
             raw_prompt = inputs.get("raw_prompt")
             if not raw_prompt:
                 # Debug: print why we're skipping
-                # print(f"[JSONL Trace] Skipping {func.__qualname__}, no raw_prompt in inputs. Keys: {list(inputs.keys())}")
+                print(f"[JSONL Trace] Skipping {func.__qualname__}, no raw_prompt in inputs. Keys: {list(inputs.keys())}")
                 return result
 
             # Get current attributes from context (via helper function)
