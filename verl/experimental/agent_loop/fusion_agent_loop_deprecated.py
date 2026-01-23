@@ -79,7 +79,7 @@ def check_server_running(force: bool = False) -> bool:
         ) from e
 
 
-@register("fusion_agent_loop")
+@register("fusion_agent_loop_deprecated")
 class FusionAgentLoopDeprecated(AgentLoopBase):
     """
     DEPRECATED: Use fusion_agent_loop instead (which uses SweRex session server).
