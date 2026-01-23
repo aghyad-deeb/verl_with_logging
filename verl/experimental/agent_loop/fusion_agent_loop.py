@@ -523,3 +523,6 @@ class FusionAgentLoop(AgentLoopBase):
             if self.current_session_id:
                 await self.session_client.destroy_session(self.current_session_id)
                 self.current_session_id = None
+            # Close the HTTP client session to avoid "Unclosed client session" warnings
+            if self.session_client:
+                await self.session_client.close()
