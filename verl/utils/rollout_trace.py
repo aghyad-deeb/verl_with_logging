@@ -670,11 +670,7 @@ def rollout_trace_op(func):
             # Only log at _run_agent_loop_inner level (has raw_prompt), not at generate level
             raw_prompt = inputs.get("raw_prompt")
             if not raw_prompt:
-                # Debug: print why we're skipping
-                print(f"[JSONL Trace] Skipping {func.__qualname__}, no raw_prompt in inputs. Keys: {list(inputs.keys())}", flush=True)
                 return result
-            else:
-                print(f"[JSONL Trace] Processing {func.__qualname__} with raw_prompt", flush=True)
 
             # Get current attributes from context (via helper function)
             attributes = _get_inspect_attributes().copy()
