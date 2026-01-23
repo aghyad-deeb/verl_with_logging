@@ -325,6 +325,11 @@ class FusionAgentLoop(AgentLoopBase):
         """
         assert self.current_session_id is not None, "Session not initialized"
         
+        # Ensure command ends with newline - required for heredocs where the
+        # delimiter must be on its own line (e.g., EOF must not be followed by </bash>)
+        if not command.endswith('\n'):
+            command = command + '\n'
+        
         result = await self.session_client.run_command(
             session_id=self.current_session_id,
             command=command,
@@ -483,6 +488,20 @@ class FusionAgentLoop(AgentLoopBase):
             mask = mask[:self.response_length]
             all_output_with_tool = all_output_with_tool[:self.response_length]
             assert len(mask) == len(all_output_with_tool)
+
+            # Final file fetch - ensure we get the requested files even if the last
+            # command was blocked or had issues
+            if self.files_to_fetch and self.current_session_id:
+                try:
+                    final_result = await self.session_client.run_command(
+                        session_id=self.current_session_id,
+                        command="true",  # No-op command just to trigger file fetch
+                        timeout=5,
+                        fetch_files=self.files_to_fetch,
+                    )
+                    fetched_files = self.decode_fetched_files(final_result.get("files", {}))
+                except Exception as e:
+                    logger.warning(f"Final file fetch failed: {e}")
 
             assert isinstance(fetched_files, np.ndarray)
             
