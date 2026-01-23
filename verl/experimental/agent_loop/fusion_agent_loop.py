@@ -283,7 +283,7 @@ class SessionClient:
             return False
 
 
-@register("fusion_agent_loop")
+@register("fusion_agent_loop_new")
 class FusionAgentLoop(AgentLoopBase):
     """
     Stateful agent loop using SandboxFusion session-based bash execution.
