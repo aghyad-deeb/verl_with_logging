@@ -49,29 +49,44 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 # Default configuration
-SANDBOX_ENDPOINT = os.getenv("SANDBOX_FUSION_ENDPOINT", "http://localhost:60808")
+# Support multiple endpoints for load distribution via consistent hashing
+# Format: comma-separated URLs, e.g., "http://localhost:60808,http://localhost:60809"
+SANDBOX_ENDPOINTS_STR = os.getenv(
+    "SANDBOX_FUSION_ENDPOINTS",
+    os.getenv("SANDBOX_FUSION_ENDPOINT", "http://localhost:60808")
+)
+SANDBOX_ENDPOINTS = [e.strip() for e in SANDBOX_ENDPOINTS_STR.split(",") if e.strip()]
+
+# Legacy single endpoint for backward compatibility
+SANDBOX_ENDPOINT = SANDBOX_ENDPOINTS[0] if SANDBOX_ENDPOINTS else "http://localhost:60808"
 
 
 def check_server_running(url: str = None) -> bool:
-    """Check if the SandboxFusion session server is running.
+    """Check if the SandboxFusion session server(s) are running.
     
     Args:
-        url: Server URL to check. Defaults to SANDBOX_FUSION_ENDPOINT env var.
+        url: Server URL to check. If None, checks all configured endpoints.
         
     Returns:
-        True if server is healthy, False otherwise.
+        True if server(s) are healthy, False otherwise.
     """
     import requests
     
-    server_url = url or SANDBOX_ENDPOINT
-    try:
-        resp = requests.get(f"{server_url}/v1/ping", timeout=5)
-        if resp.status_code == 200:
-            return "pong" in resp.text
-        return False
-    except Exception as e:
-        logger.debug(f"Server check failed: {e}")
-        return False
+    endpoints_to_check = [url] if url else SANDBOX_ENDPOINTS
+    
+    for endpoint in endpoints_to_check:
+        try:
+            resp = requests.get(f"{endpoint}/v1/ping", timeout=5)
+            if resp.status_code != 200 or "pong" not in resp.text:
+                logger.debug(f"Server check failed for {endpoint}")
+                return False
+        except Exception as e:
+            logger.debug(f"Server check failed for {endpoint}: {e}")
+            return False
+    
+    return True
+
+
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "30"))
 SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
 
@@ -80,35 +95,85 @@ class SessionClient:
     """
     Async client for SandboxFusion session-based bash execution.
     
+    Supports multiple container endpoints with consistent hashing for load distribution.
+    Sessions are routed to containers based on a hash of the session_id, ensuring
+    all requests for a session go to the same container.
+    
     Provides high-level methods for creating, using, and destroying
     stateful bash sessions.
     """
     
     def __init__(
         self,
-        endpoint: str = SANDBOX_ENDPOINT,
+        endpoints: Optional[List[str]] = None,
         client_timeout: float = SANDBOX_CLIENT_TIMEOUT,
         run_timeout: float = SANDBOX_RUN_TIMEOUT,
     ):
-        self.endpoint = endpoint.rstrip('/')
+        """
+        Initialize the session client.
+        
+        Args:
+            endpoints: List of container endpoints. If None, uses SANDBOX_ENDPOINTS.
+            client_timeout: HTTP client timeout in seconds.
+            run_timeout: Default command execution timeout in seconds.
+        """
+        import hashlib
+        self._hashlib = hashlib
+        
+        # Support both single endpoint (backward compat) and multiple endpoints
+        if endpoints is None:
+            endpoints = SANDBOX_ENDPOINTS
+        elif isinstance(endpoints, str):
+            endpoints = [endpoints]
+        
+        self.endpoints = [e.rstrip('/') for e in endpoints]
         self.client_timeout = aiohttp.ClientTimeout(total=client_timeout)
         self.run_timeout = run_timeout
-        self._session: Optional[aiohttp.ClientSession] = None
+        
+        # One HTTP session per endpoint for connection pooling
+        self._http_sessions: Dict[str, aiohttp.ClientSession] = {}
+        
+        # Track session_id -> endpoint mapping for consistent routing
+        self._session_endpoints: Dict[str, str] = {}
     
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create the aiohttp session."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=self.client_timeout)
-        return self._session
+    def _hash_to_endpoint(self, session_id: str) -> str:
+        """
+        Consistent hash: same session_id always maps to same endpoint.
+        Uses MD5 for stability across Python versions (built-in hash() can vary).
+        """
+        if len(self.endpoints) == 1:
+            return self.endpoints[0]
+        
+        hash_bytes = self._hashlib.md5(session_id.encode()).digest()
+        hash_int = int.from_bytes(hash_bytes[:8], 'big')
+        return self.endpoints[hash_int % len(self.endpoints)]
+    
+    def _get_endpoint_for_session(self, session_id: str) -> str:
+        """Get the endpoint for a session, using cached mapping or hash."""
+        if session_id in self._session_endpoints:
+            return self._session_endpoints[session_id]
+        
+        endpoint = self._hash_to_endpoint(session_id)
+        self._session_endpoints[session_id] = endpoint
+        return endpoint
+    
+    async def _get_http_session(self, endpoint: str) -> aiohttp.ClientSession:
+        """Get or create HTTP session for an endpoint (connection pooling)."""
+        if endpoint not in self._http_sessions or self._http_sessions[endpoint].closed:
+            self._http_sessions[endpoint] = aiohttp.ClientSession(timeout=self.client_timeout)
+        return self._http_sessions[endpoint]
     
     async def close(self):
-        """Close the HTTP session."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        """Close all HTTP sessions."""
+        for session in self._http_sessions.values():
+            if session and not session.closed:
+                await session.close()
+        self._http_sessions.clear()
+        self._session_endpoints.clear()
     
     async def create_session(
         self,
+        session_id: str,
         files: Optional[Dict[str, str]] = None,
         startup_commands: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
@@ -116,7 +181,11 @@ class SessionClient:
         """
         Create a new bash session.
         
+        The session_id is generated client-side and used for consistent hashing
+        to determine which container handles this session.
+        
         Args:
+            session_id: Client-generated session identifier (used for routing)
             files: Dict of filename -> base64-encoded content
             startup_commands: Commands to run on initialization
             env: Additional environment variables
@@ -124,15 +193,18 @@ class SessionClient:
         Returns:
             session_id for use in subsequent commands
         """
-        session = await self._get_session()
+        endpoint = self._get_endpoint_for_session(session_id)
+        http_session = await self._get_http_session(endpoint)
+        
         payload = {
+            "session_id": session_id,  # Pass client-generated ID to server
             "files": files or {},
             "startup_commands": startup_commands or [],
             "env": env or {},
         }
         
-        async with session.post(
-            f"{self.endpoint}/session/create",
+        async with http_session.post(
+            f"{endpoint}/session/create",
             json=payload,
         ) as response:
             result = await response.json()
@@ -140,7 +212,7 @@ class SessionClient:
         if result.get("status") != "Success":
             raise RuntimeError(f"Failed to create session: {result.get('message', 'Unknown error')}")
         
-        return result["session_id"]
+        return session_id
     
     async def run_command(
         self,
@@ -152,6 +224,8 @@ class SessionClient:
         """
         Run a command in an existing session.
         
+        Automatically routes to the correct container based on session_id hash.
+        
         Args:
             session_id: Session identifier
             command: Bash command to execute
@@ -161,7 +235,9 @@ class SessionClient:
         Returns:
             Dict with status, stdout, stderr, return_code, files
         """
-        session = await self._get_session()
+        endpoint = self._get_endpoint_for_session(session_id)
+        http_session = await self._get_http_session(endpoint)
+        
         payload = {
             "session_id": session_id,
             "command": command,
@@ -169,8 +245,8 @@ class SessionClient:
             "fetch_files": fetch_files or [],
         }
         
-        async with session.post(
-            f"{self.endpoint}/session/run",
+        async with http_session.post(
+            f"{endpoint}/session/run",
             json=payload,
         ) as response:
             return await response.json()
@@ -179,24 +255,31 @@ class SessionClient:
         """
         Destroy a session and clean up resources.
         
+        Automatically routes to the correct container based on session_id hash.
+        
         Args:
             session_id: Session to destroy
             
         Returns:
             True if successful
         """
-        session = await self._get_session()
+        endpoint = self._get_endpoint_for_session(session_id)
+        http_session = await self._get_http_session(endpoint)
+        
         payload = {"session_id": session_id}
         
         try:
-            async with session.post(
-                f"{self.endpoint}/session/destroy",
+            async with http_session.post(
+                f"{endpoint}/session/destroy",
                 json=payload,
             ) as response:
                 result = await response.json()
+                # Clean up the endpoint mapping
+                self._session_endpoints.pop(session_id, None)
                 return result.get("status") == "Success"
         except Exception as e:
             logger.warning(f"Failed to destroy session {session_id}: {e}")
+            self._session_endpoints.pop(session_id, None)
             return False
 
 
@@ -228,9 +311,9 @@ class FusionAgentLoop(AgentLoopBase):
         self.response_length = self.config.actor_rollout_ref.rollout.response_length
         self.apply_chat_template_kwargs = self.config.data.get("apply_chat_template_kwargs", {})
         
-        # Session client for stateful bash
+        # Session client for stateful bash (supports multiple containers)
         self.session_client = SessionClient(
-            endpoint=SANDBOX_ENDPOINT,
+            endpoints=SANDBOX_ENDPOINTS,
             client_timeout=SANDBOX_CLIENT_TIMEOUT,
             run_timeout=SANDBOX_RUN_TIMEOUT,
         )
@@ -355,8 +438,11 @@ class FusionAgentLoop(AgentLoopBase):
         files = self.flatten_structure(files_dict)
 
         # Create a new session for this episode
+        # Generate session_id client-side for consistent hashing across multiple containers
+        session_id = uuid4().hex
         try:
             self.current_session_id = await self.session_client.create_session(
+                session_id=session_id,
                 files=files,
                 startup_commands=startup_commands,
             )
