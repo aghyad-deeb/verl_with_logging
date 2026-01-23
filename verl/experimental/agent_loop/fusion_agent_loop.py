@@ -613,10 +613,12 @@ class FusionAgentLoop(AgentLoopBase):
             
         finally:
             # Always clean up the session at episode end
-            # NOTE: Only destroy the individual session, NOT the shared session_client!
-            # The session_client is created once in __init__ and shared across all
-            # concurrent episodes. Closing it here would break other running episodes.
             if self.current_session_id:
                 with simple_timer("session_destroy", metrics):
                     await self.session_client.destroy_session(self.current_session_id)
                 self.current_session_id = None
+            # Close the HTTP client sessions to avoid "Unclosed client session" warnings
+            # Each episode creates its own FusionAgentLoop instance via hydra.utils.instantiate
+            if self.session_client:
+                with simple_timer("session_close_http", metrics):
+                    await self.session_client.close()

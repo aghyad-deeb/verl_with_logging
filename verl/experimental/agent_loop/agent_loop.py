@@ -132,6 +132,7 @@ class AgentLoopMetrics(BaseModel):
     # Bash environment timing metrics
     session_create: float = 0.0
     session_destroy: float = 0.0
+    session_close_http: float = 0.0
     final_file_fetch: float = 0.0
     tool_calls_count: int = 0
 
