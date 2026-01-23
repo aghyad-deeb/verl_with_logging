@@ -12,20 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Fusion Agent Loop - Stateful Bash Execution via SandboxFusion Sessions.
+Stateful Fusion Agent Loop using Session-Based Bash Execution.
 
-This is the main agent loop for bash execution with true statefulness:
+This agent loop uses SandboxFusion's session API for true statefulness:
 - Working directory changes (cd) persist across commands
 - Environment variables (export) persist across commands
 - File system changes persist within the episode
 - Full isolation between episodes (session cleanup)
 
-Uses SandboxFusion's session API which maintains state via subprocess pipes,
-allowing for 10,000+ concurrent sessions.
+Unlike the deprecated version that replays command history, this uses
+a persistent bash process per episode for better performance with
+many commands.
 
 Requirements:
     - SandboxFusion server with session support running
-    - See: https://github.com/aghyad-deeb/sandbox-fusion-sessions
     - Session API endpoints: /session/create, /session/run, /session/destroy
 
 Environment variables:
@@ -50,28 +50,6 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 # Default configuration
 SANDBOX_ENDPOINT = os.getenv("SANDBOX_FUSION_ENDPOINT", "http://localhost:60808")
-
-
-def check_server_running(url: str = None) -> bool:
-    """Check if the SandboxFusion session server is running.
-    
-    Args:
-        url: Server URL to check. Defaults to SANDBOX_FUSION_ENDPOINT env var.
-        
-    Returns:
-        True if server is healthy, False otherwise.
-    """
-    import requests
-    
-    server_url = url or SANDBOX_ENDPOINT
-    try:
-        resp = requests.get(f"{server_url}/v1/ping", timeout=5)
-        if resp.status_code == 200:
-            return "pong" in resp.text
-        return False
-    except Exception as e:
-        logger.debug(f"Server check failed: {e}")
-        return False
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "30"))
 SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
 
@@ -200,8 +178,8 @@ class SessionClient:
             return False
 
 
-@register("fusion_agent_loop")
-class FusionAgentLoop(AgentLoopBase):
+@register("fusion_agent_loop_stateful")
+class FusionAgentLoopStateful(AgentLoopBase):
     """
     Stateful agent loop using SandboxFusion session-based bash execution.
     
