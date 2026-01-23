@@ -493,6 +493,7 @@ class AgentLoopWorkerBase:
         self,
         sampling_params: dict[str, Any],
         agent_name: str,
+        raw_prompt = None,
         **kwargs,
     ) -> _InternalAgentLoopOutput:
         """Inner agent loop decorated with rollout_trace_op to capture reward."""
@@ -502,6 +503,7 @@ class AgentLoopWorkerBase:
             f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
         )
 
+        kwargs["raw_prompt"] = raw_prompt
         agent_loop_config = _agent_loop_registry[agent_name]
         agent_loop = hydra.utils.instantiate(
             config=agent_loop_config,
