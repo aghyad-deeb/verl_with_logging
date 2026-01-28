@@ -30,7 +30,7 @@ Requirements:
 
 Environment variables:
     - SANDBOX_FUSION_ENDPOINT: Sandbox server URL (default: http://localhost:60808)
-    - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 30)
+    - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 120)
     - SANDBOX_RUN_TIMEOUT: Code execution timeout in seconds (default: 10)
 """
 import logging
@@ -87,7 +87,7 @@ def check_server_running(url: str = None) -> bool:
     return True
 
 
-SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "30"))
+SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "120"))
 SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
 
 
@@ -301,7 +301,7 @@ class FusionAgentLoop(AgentLoopBase):
     
     Environment variables:
     - SANDBOX_FUSION_ENDPOINT: Server URL (default: http://localhost:60808)
-    - SANDBOX_CLIENT_TIMEOUT: HTTP timeout (default: 30)
+    - SANDBOX_CLIENT_TIMEOUT: HTTP timeout (default: 120)
     - SANDBOX_RUN_TIMEOUT: Execution timeout (default: 10)
     """
     
