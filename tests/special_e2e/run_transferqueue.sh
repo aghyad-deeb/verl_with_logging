@@ -8,7 +8,7 @@ ACTOR_STRATEGY=${ACTOR_STRATEGY:-"fsdp"}  # fsdp or megatron
 # Download model if not exists
 MODEL_ID=${MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}
 MODEL_PATH=${MODEL_PATH:-${HOME}/models/${MODEL_ID}}
-huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_PATH}"
+hf download "${MODEL_ID}" --local-dir "${MODEL_PATH}"
 
 
 rollout_mode="async"
@@ -131,7 +131,7 @@ if [ "${ACTOR_STRATEGY}" == "fsdp" ]; then
     ref_offload=True
     actor_offload=False
 
-    python3 -m recipe.transfer_queue.main_ppo \
+    python3 -m verl.experimental.transfer_queue.main_ppo \
         --config-path=config \
         --config-name='transfer_queue_ppo_trainer' \
         "${common_params[@]}" \
@@ -164,7 +164,7 @@ elif [ "${ACTOR_STRATEGY}" == "megatron" ]; then
     # For Ascend NPU, please add:
     #++actor_rollout_ref.actor.megatron.override_transformer_config.use_flash_attn=True \
     #++actor_rollout_ref.ref.megatron.override_transformer_config.use_flash_attn=True \
-    python3 -m recipe.transfer_queue.main_ppo \
+    python3 -m verl.experimental.transfer_queue.main_ppo \
         --config-path=config \
         --config-name='transfer_queue_ppo_megatron_trainer' \
         "${common_params[@]}" \

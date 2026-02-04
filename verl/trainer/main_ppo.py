@@ -37,7 +37,7 @@ def main(config):
     """Main entry point for PPO training with Hydra configuration management.
 
     Args:
-        config_dict: Hydra configuration dictionary containing training parameters.
+        config: Hydra configuration dictionary containing training parameters.
     """
     # Automatically set `config.trainer.device = npu` when running on Ascend NPU.
     auto_set_device(config)
@@ -133,9 +133,14 @@ class TaskRunner:
 
             actor_rollout_cls = ActorRolloutRefWorker
             ray_worker_group_cls = RayWorkerGroup
+
+            lora_rank = config.actor_rollout_ref.model.get("lora", {}).get("rank", 0)
+            if lora_rank <= 0:
+                lora_rank = config.actor_rollout_ref.model.get("lora_rank", 0)
+            ref_in_actor = lora_rank > 0 or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
             # NOTE: In new model engine, ref policy and actor rollout are in same ActorRolloutRefWorker,
             # while in legacy model engine, ref policy is in a separate ActorRolloutRefWorker.
-            if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
+            if need_reference_policy(config) and not ref_in_actor:
                 role = Role.ActorRolloutRef
             else:
                 role = Role.ActorRollout
@@ -249,7 +254,7 @@ class TaskRunner:
         if use_legacy_worker_impl == "disable":
             return
 
-        if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
+        if need_reference_policy(config):
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
 
@@ -291,7 +296,7 @@ class TaskRunner:
         # validate config
         validate_config(
             config=config,
-            use_reference_policy=need_reference_policy(self.role_worker_mapping),
+            use_reference_policy=need_reference_policy(config),
             use_critic=need_critic(config),
         )
 
@@ -309,13 +314,24 @@ class TaskRunner:
         # Used for multimodal LLM, could be None
         processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
 
-        # Load the reward manager for training and validation.
-        reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
-        )
-        val_reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
-        )
+        use_reward_loop = config.reward_model.use_reward_loop
+        if not use_reward_loop:
+            print(
+                "WARNING: Init reward manager in single controller will be deprecated. "
+                "Please set config.reward_model.use_reward_loop to use distributed reward manager."
+            )
+            # Load the reward manager for training and validation.
+            reward_fn = load_reward_manager(
+                config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
+            )
+            val_reward_fn = load_reward_manager(
+                config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
+            )
+        else:
+            # reward_loop will use init a reward loop manager in ray_trainer
+            # and use it to compute reward score
+            reward_fn = None
+            val_reward_fn = None
 
         resource_pool_manager = self.init_resource_pool_mgr(config)
 

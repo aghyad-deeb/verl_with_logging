@@ -23,6 +23,8 @@ from contextvars import ContextVar
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
+from pydantic import BaseModel
+
 from verl.utils.ray_utils import get_event_loop
 
 _trace_enabled: ContextVar[bool] = ContextVar("_trace_enabled", default=True)
@@ -544,7 +546,13 @@ def rollout_trace_op(func):
 
         async def add_token2text(self, result):
             if hasattr(result, "prompt_ids") and hasattr(self, "tokenizer") and hasattr(self.tokenizer, "decode"):
-                _result = vars(result)
+                # Use model_dump() for Pydantic models to get a proper copy,
+                # otherwise vars() returns a reference to internal __dict__ which
+                # can cause serialization issues with MLflow
+                if isinstance(result, BaseModel):
+                    _result = result.model_dump()
+                else:
+                    _result = dict(vars(result))
                 loop = get_event_loop()
                 if hasattr(result, "prompt_ids"):
                     prompt_text = await loop.run_in_executor(None, self.tokenizer.decode, result.prompt_ids)

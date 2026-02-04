@@ -653,7 +653,10 @@ def log_probs_from_logits_all_rmpad(input_ids_rmpad, logits_rmpad, indices, batc
         seqlen: int
         response_length: int
     """
-    from flash_attn.bert_padding import pad_input
+    if get_device_name() == "cuda":
+        from flash_attn.bert_padding import pad_input
+    elif get_device_name() == "npu":
+        from verl.utils.attention_utils import pad_input
 
     input_ids_rmpad = input_ids_rmpad.transpose(0, 1)  # transpose back to [total_nnz, 1]
     input_ids_rmpad = input_ids_rmpad.squeeze(-1)
@@ -675,6 +678,23 @@ def post_process_logits(input_ids, logits, temperature, top_k, top_p):
     # if top_p is not None and top_p < 1.0 and top_p > 0.0:
     #     logits = TopPLogitsWarper(top_p=top_p)(input_ids, logits)
     return logits
+
+
+def calculate_sum_pi_squared_from_logits(logits: torch.Tensor):
+    """
+    Compute exact sum of squared probabilities from logits.
+    Formula: Σπ² = exp(logsumexp(2*logits) - 2*logsumexp(logits))
+
+    Used for optimal baseline variance reduction as described in
+    "What Matters for Model Merging at Scale?" (arXiv:2410.03617)
+
+    Args:
+        logits: Logits tensor (..., vocab_size).
+
+    Returns:
+        Sum of squared probabilities tensor (...).
+    """
+    return torch.exp(torch.logsumexp(2.0 * logits, dim=-1) - 2.0 * torch.logsumexp(logits, dim=-1))
 
 
 """
@@ -951,6 +971,31 @@ def distributed_masked_mean(local_tensor, local_mask):
 
     global_mean = local_sum / local_num
     return global_mean
+
+
+def expand_as_nested(tensor: torch.Tensor, nested_tensor: torch.Tensor) -> torch.Tensor:
+    """
+
+    Args:
+        tensor: a tensor with shape (bsz,)
+        nested_tensor: a nested tensor with shape (bsz, xxx)
+
+    Returns:
+        a tensor with the same shape as nested_tensor
+
+    """
+    assert nested_tensor.is_nested, "nested_tensor must be nested"
+    assert tensor.shape[0] == nested_tensor.shape[0], (
+        f"The batch shape must be the same. Got {tensor.shape[0]} vs {nested_tensor.shape[0]}"
+    )
+    assert len(tensor.shape) == 1, "The ndim of tensor must be 1"
+    assert len(nested_tensor.shape) == 2, "The ndim of nested_tensor must be 2"
+
+    offsets = nested_tensor.offsets()
+    seqlens = offsets.diff()
+    output = torch.repeat_interleave(tensor, seqlens, dim=0)
+    output = torch.nested.nested_tensor_from_jagged(values=output, offsets=offsets)
+    return output
 
 
 @contextmanager

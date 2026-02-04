@@ -11,7 +11,7 @@ ACTOR_STRATEGY=${ACTOR_STRATEGY:-"fsdp2"}  # fsdp2 or megatron
 # Download model if not exists
 MODEL_ID=${MODEL_ID:-Qwen/Qwen2.5-0.5B-Instruct}
 MODEL_PATH=${MODEL_PATH:-${HOME}/models/${MODEL_ID}}
-#huggingface-cli download "${MODEL_ID}" --local-dir "${MODEL_PATH}"
+#hf download "${MODEL_ID}" --local-dir "${MODEL_PATH}"
 
 # Algorithm parameters
 adv_estimator=grpo
@@ -121,7 +121,7 @@ if [ "${ACTOR_STRATEGY}" == "fsdp2" ]; then
     ref_offload=True
     actor_offload=False
 
-    python3 -m recipe.one_step_off_policy.main_ppo \
+    python3 -m verl.experimental.one_step_off_policy.main_ppo \
         "${common_params[@]}" \
         actor_rollout_ref.actor.strategy=fsdp2 \
         critic.strategy=fsdp2 \
@@ -148,7 +148,7 @@ elif [ "${ACTOR_STRATEGY}" == "megatron" ]; then
     ref_offload=True
     actor_offload=False
 
-    python3 -m recipe.one_step_off_policy.main_ppo \
+    python3 -m verl.experimental.one_step_off_policy.main_ppo \
         --config-path=config \
         --config-name='one_step_off_ppo_megatron_trainer.yaml' \
         "${common_params[@]}" \

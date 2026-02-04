@@ -148,6 +148,8 @@ class ActorConfig(BaseConfig):
     tau_neg: float = 1.05
     calculate_entropy: bool = False
     use_kl_loss: bool = False
+    # Whether to enable PrefixGrouper-based shared-prefix forward
+    use_prefix_grouper: bool = False
     use_torch_compile: bool = True
     kl_loss_coef: float = 0.001
     kl_loss_type: str = "low_var_kl"
@@ -283,6 +285,8 @@ class FSDPActorConfig(ActorConfig):
     fsdp_config: FSDPEngineConfig = field(default_factory=FSDPEngineConfig)
     use_remove_padding: bool = False
     use_rollout_log_probs: bool = False
+    calculate_sum_pi_squared: bool = False
+    sum_pi_squared_checkpointing: bool = False
 
     def __post_init__(self):
         """Validate FSDP actor configuration parameters."""

@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
@@ -20,6 +19,7 @@ from omegaconf import MISSING
 
 from verl.base_config import BaseConfig
 from verl.utils.profiler import ProfilerConfig
+from verl.workers.config.model import MtpConfig
 
 __all__ = [
     "SamplingConfig",
@@ -30,6 +30,7 @@ __all__ = [
     "ServerConfig",
     "PrometheusConfig",
     "RolloutConfig",
+    "CheckpointEngineConfig",
 ]
 
 
@@ -122,6 +123,20 @@ class PrometheusConfig(BaseConfig):
 
 
 @dataclass
+class CheckpointEngineConfig(BaseConfig):
+    """
+    Configuration for checkpoint engine to update weights from trainer to rollout
+    """
+
+    # Backend for checkpoint engine: naive, nccl, nixl, hccl
+    backend: Optional[str] = MISSING
+    # Bucket size in MB to transfer multiple weights at one time
+    update_weights_bucket_megabytes: int = 2048
+    # Additional keyword arguments for checkpoint engine
+    engine_kwargs: dict = field(default_factory=dict)
+
+
+@dataclass
 class RolloutConfig(BaseConfig):
     _mutable_fields = {"max_model_len", "load_format"}
 
@@ -154,6 +169,7 @@ class RolloutConfig(BaseConfig):
     pipeline_model_parallel_size: int = 1
     max_num_batched_tokens: int = 8192
     logprobs_mode: Optional[str] = "processed_logprobs"
+    scheduling_policy: Optional[str] = "fcfs"
 
     # TODO: enable train_kwargs
     # train_sampling_config: SamplingConfig = field(default_factory=SamplingConfig)
@@ -191,7 +207,8 @@ class RolloutConfig(BaseConfig):
     # Extension point for custom configurations
     custom: Optional[dict] = None
 
-    update_weights_bucket_megabytes: int = 512
+    # Checkpoint Engine config for update weights from trainer to rollout
+    checkpoint_engine: CheckpointEngineConfig = field(default_factory=CheckpointEngineConfig)
 
     skip_rollout: bool = False
 
@@ -223,6 +240,8 @@ class RolloutConfig(BaseConfig):
 
     enable_sleep_mode: bool = True
 
+    mtp: MtpConfig = field(default_factory=MtpConfig)
+
     def __post_init__(self):
         """Validate the rollout config"""
         # Deprecation warning for mode field - only async mode is supported
@@ -245,7 +264,7 @@ class RolloutConfig(BaseConfig):
             )
 
         if self.pipeline_model_parallel_size > 1:
-            if self.name == "vllm" or self.name == "sglang":
+            if self.name == "vllm" or self.name == "sglang" or self.name == "trtllm":
                 raise NotImplementedError(
                     f"Current rollout {self.name=} not implemented pipeline_model_parallel_size > 1 yet."
                 )

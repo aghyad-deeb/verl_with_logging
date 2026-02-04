@@ -1,6 +1,9 @@
+<<<<<<< HEAD
 *tmp*
 
 **/onstart.sh
+=======
+>>>>>>> 2cd9283034f32b2c091253e2f7d4cb5cccae6a44
 **/*.pt
 **/checkpoints
 **/wget-log
