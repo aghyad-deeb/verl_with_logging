@@ -30,12 +30,13 @@ Requirements:
 
 Environment variables:
     - SANDBOX_FUSION_ENDPOINT: Sandbox server URL (default: http://localhost:60808)
-    - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 30)
+    - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 120)
     - SANDBOX_RUN_TIMEOUT: Code execution timeout in seconds (default: 10)
 """
 import logging
 import os
 import base64
+import asyncio
 import numpy as np
 import aiohttp
 from typing import Any, Optional, Dict, List
@@ -87,8 +88,12 @@ def check_server_running(url: str = None) -> bool:
     return True
 
 
-SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "30"))
+SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "120"))
 SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
+
+# Retry configuration for transient connection errors
+SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "10"))
+SANDBOX_RETRY_BACKOFF = float(os.getenv("SANDBOX_RETRY_BACKOFF", "1.0"))  # Base backoff in seconds
 
 
 class SessionClient:
@@ -225,6 +230,7 @@ class SessionClient:
         Run a command in an existing session.
         
         Automatically routes to the correct container based on session_id hash.
+        Includes retry logic for transient connection errors.
         
         Args:
             session_id: Session identifier
@@ -236,7 +242,6 @@ class SessionClient:
             Dict with status, stdout, stderr, return_code, files
         """
         endpoint = self._get_endpoint_for_session(session_id)
-        http_session = await self._get_http_session(endpoint)
         
         payload = {
             "session_id": session_id,
@@ -245,11 +250,49 @@ class SessionClient:
             "fetch_files": fetch_files or [],
         }
         
-        async with http_session.post(
-            f"{endpoint}/session/run",
-            json=payload,
-        ) as response:
-            return await response.json()
+        last_exception = None
+        for attempt in range(SANDBOX_MAX_RETRIES):
+            try:
+                # Get fresh http session for each attempt (in case connection was broken)
+                http_session = await self._get_http_session(endpoint)
+                
+                async with http_session.post(
+                    f"{endpoint}/session/run",
+                    json=payload,
+                ) as response:
+                    return await response.json()
+                    
+            except (
+                aiohttp.ClientConnectionError,
+                aiohttp.ClientOSError,
+                aiohttp.ServerDisconnectedError,
+                ConnectionResetError,
+                OSError,
+                asyncio.TimeoutError,
+            ) as e:
+                last_exception = e
+                # Close the potentially broken session
+                if endpoint in self._http_sessions:
+                    try:
+                        await self._http_sessions[endpoint].close()
+                    except Exception:
+                        pass
+                    del self._http_sessions[endpoint]
+                
+                if attempt < SANDBOX_MAX_RETRIES - 1:
+                    backoff = SANDBOX_RETRY_BACKOFF * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Transient connection error on attempt {attempt + 1}/{SANDBOX_MAX_RETRIES}, "
+                        f"retrying in {backoff}s: {type(e).__name__}: {e}"
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.error(
+                        f"Failed after {SANDBOX_MAX_RETRIES} attempts: {type(e).__name__}: {e}"
+                    )
+        
+        # All retries exhausted, raise the last exception
+        raise last_exception
     
     async def destroy_session(self, session_id: str) -> bool:
         """
@@ -301,7 +344,7 @@ class FusionAgentLoop(AgentLoopBase):
     
     Environment variables:
     - SANDBOX_FUSION_ENDPOINT: Server URL (default: http://localhost:60808)
-    - SANDBOX_CLIENT_TIMEOUT: HTTP timeout (default: 30)
+    - SANDBOX_CLIENT_TIMEOUT: HTTP timeout (default: 120)
     - SANDBOX_RUN_TIMEOUT: Execution timeout (default: 10)
     """
     
