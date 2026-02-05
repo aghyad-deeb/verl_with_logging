@@ -104,15 +104,26 @@ class SessionClient:
     Sessions are routed to containers based on a hash of the session_id, ensuring
     all requests for a session go to the same container.
     
-    Provides high-level methods for creating, using, and destroying
-    stateful bash sessions.
+    Retry and failover strategy:
+    - All HTTP requests go through _request_with_retry, which retries on any
+      transient error (connection failures, malformed responses, timeouts, etc.)
+    - create_session has container failover: if the primary (hashed) container
+      fails after retries, it rotates to the next container in the ring.
+    - run_command retries on the same container only (the session state is pinned).
+    - destroy_session is best-effort with minimal retries.
     """
+    
+    # Exceptions that indicate a programming bug, not a transient failure.
+    # These should NOT be retried — they would fail identically every time.
+    _NON_RETRYABLE = (TypeError, ValueError, KeyboardInterrupt, SystemExit)
     
     def __init__(
         self,
         endpoints: Optional[List[str]] = None,
         client_timeout: float = SANDBOX_CLIENT_TIMEOUT,
         run_timeout: float = SANDBOX_RUN_TIMEOUT,
+        max_retries: int = SANDBOX_MAX_RETRIES,
+        retry_backoff: float = SANDBOX_RETRY_BACKOFF,
     ):
         """
         Initialize the session client.
@@ -121,6 +132,8 @@ class SessionClient:
             endpoints: List of container endpoints. If None, uses SANDBOX_ENDPOINTS.
             client_timeout: HTTP client timeout in seconds.
             run_timeout: Default command execution timeout in seconds.
+            max_retries: Max retries for run_command (per container).
+            retry_backoff: Base backoff in seconds (doubles each attempt).
         """
         import hashlib
         self._hashlib = hashlib
@@ -134,6 +147,8 @@ class SessionClient:
         self.endpoints = [e.rstrip('/') for e in endpoints]
         self.client_timeout = aiohttp.ClientTimeout(total=client_timeout)
         self.run_timeout = run_timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
         
         # One HTTP session per endpoint for connection pooling
         self._http_sessions: Dict[str, aiohttp.ClientSession] = {}
@@ -168,6 +183,15 @@ class SessionClient:
             self._http_sessions[endpoint] = aiohttp.ClientSession(timeout=self.client_timeout)
         return self._http_sessions[endpoint]
     
+    async def _close_http_session(self, endpoint: str):
+        """Close and remove the HTTP session for an endpoint."""
+        if endpoint in self._http_sessions:
+            try:
+                await self._http_sessions[endpoint].close()
+            except Exception:
+                pass
+            del self._http_sessions[endpoint]
+    
     async def close(self):
         """Close all HTTP sessions."""
         for session in self._http_sessions.values():
@@ -175,6 +199,65 @@ class SessionClient:
                 await session.close()
         self._http_sessions.clear()
         self._session_endpoints.clear()
+    
+    async def _request_with_retry(
+        self,
+        endpoint: str,
+        path: str,
+        payload: Dict,
+        max_retries: Optional[int] = None,
+    ) -> Dict:
+        """
+        Make an HTTP POST request with retry and exponential backoff.
+        
+        Retries on all transient errors: connection failures, malformed responses,
+        JSON parse errors, server disconnects, timeouts, etc. Only programming
+        errors (TypeError, ValueError) are not retried.
+        
+        Args:
+            endpoint: Container base URL.
+            path: API path (e.g., "/session/run").
+            payload: JSON payload for the POST request.
+            max_retries: Override for self.max_retries.
+            
+        Returns:
+            Parsed JSON response dict.
+            
+        Raises:
+            The last exception encountered after all retries are exhausted.
+        """
+        retries = max_retries if max_retries is not None else self.max_retries
+        last_exception = None
+        
+        for attempt in range(retries):
+            try:
+                http_session = await self._get_http_session(endpoint)
+                async with http_session.post(
+                    f"{endpoint}{path}",
+                    json=payload,
+                ) as response:
+                    return await response.json()
+            except self._NON_RETRYABLE:
+                raise
+            except Exception as e:
+                last_exception = e
+                await self._close_http_session(endpoint)
+                
+                if attempt < retries - 1:
+                    backoff = self.retry_backoff * (2 ** attempt)
+                    logger.warning(
+                        f"Request to {endpoint}{path} failed on attempt "
+                        f"{attempt + 1}/{retries}, retrying in {backoff:.1f}s: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.error(
+                        f"Request to {endpoint}{path} failed after "
+                        f"{retries} attempts: {type(e).__name__}: {e}"
+                    )
+        
+        raise last_exception
     
     async def create_session(
         self,
@@ -184,10 +267,11 @@ class SessionClient:
         env: Optional[Dict[str, str]] = None,
     ) -> str:
         """
-        Create a new bash session.
+        Create a new bash session with container failover.
         
-        The session_id is generated client-side and used for consistent hashing
-        to determine which container handles this session.
+        Tries the primary container (determined by consistent hash) first.
+        If that fails after retries, rotates through other containers in
+        the ring until one succeeds or all are exhausted.
         
         Args:
             session_id: Client-generated session identifier (used for routing)
@@ -197,27 +281,64 @@ class SessionClient:
             
         Returns:
             session_id for use in subsequent commands
+            
+        Raises:
+            RuntimeError: If session creation fails on all containers.
         """
-        endpoint = self._get_endpoint_for_session(session_id)
-        http_session = await self._get_http_session(endpoint)
-        
         payload = {
-            "session_id": session_id,  # Pass client-generated ID to server
+            "session_id": session_id,
             "files": files or {},
             "startup_commands": startup_commands or [],
             "env": env or {},
         }
         
-        async with http_session.post(
-            f"{endpoint}/session/create",
-            json=payload,
-        ) as response:
-            result = await response.json()
-            
-        if result.get("status") != "Success":
-            raise RuntimeError(f"Failed to create session: {result.get('message', 'Unknown error')}")
+        # Determine the order of endpoints to try: primary first, then rotate
+        primary = self._hash_to_endpoint(session_id)
+        primary_idx = self.endpoints.index(primary)
+        ordered_endpoints = (
+            self.endpoints[primary_idx:] + self.endpoints[:primary_idx]
+        )
         
-        return session_id
+        # Retry budget per container: smaller than run_command retries since
+        # we can failover to another container instead
+        retries_per_container = 3
+        
+        last_exception = None
+        for endpoint in ordered_endpoints:
+            try:
+                result = await self._request_with_retry(
+                    endpoint, "/session/create", payload,
+                    max_retries=retries_per_container,
+                )
+                if result.get("status") == "Success":
+                    # Pin this session to the container that accepted it
+                    self._session_endpoints[session_id] = endpoint
+                    return session_id
+                else:
+                    # Application-level failure (e.g., max sessions reached,
+                    # duplicate session ID). Try the next container.
+                    last_exception = RuntimeError(
+                        f"Session creation failed on {endpoint}: "
+                        f"{result.get('message', 'Unknown error')}"
+                    )
+                    logger.warning(
+                        f"Session creation returned status={result.get('status')} "
+                        f"on {endpoint}, trying next container: "
+                        f"{result.get('message', '')}"
+                    )
+            except self._NON_RETRYABLE:
+                raise
+            except Exception as e:
+                last_exception = e
+                logger.warning(
+                    f"Session creation failed on {endpoint} after retries, "
+                    f"trying next container: {type(e).__name__}: {e}"
+                )
+        
+        raise RuntimeError(
+            f"Failed to create session on all {len(ordered_endpoints)} "
+            f"containers. Last error: {last_exception}"
+        )
     
     async def run_command(
         self,
@@ -229,8 +350,8 @@ class SessionClient:
         """
         Run a command in an existing session.
         
-        Automatically routes to the correct container based on session_id hash.
-        Includes retry logic for transient connection errors.
+        Retries on the same container (the session state is pinned there).
+        No container failover — the session cannot be moved mid-episode.
         
         Args:
             session_id: Session identifier
@@ -242,63 +363,20 @@ class SessionClient:
             Dict with status, stdout, stderr, return_code, files
         """
         endpoint = self._get_endpoint_for_session(session_id)
-        
         payload = {
             "session_id": session_id,
             "command": command,
             "timeout": timeout or self.run_timeout,
             "fetch_files": fetch_files or [],
         }
-        
-        last_exception = None
-        for attempt in range(SANDBOX_MAX_RETRIES):
-            try:
-                # Get fresh http session for each attempt (in case connection was broken)
-                http_session = await self._get_http_session(endpoint)
-                
-                async with http_session.post(
-                    f"{endpoint}/session/run",
-                    json=payload,
-                ) as response:
-                    return await response.json()
-                    
-            except (
-                aiohttp.ClientConnectionError,
-                aiohttp.ClientOSError,
-                aiohttp.ServerDisconnectedError,
-                ConnectionResetError,
-                OSError,
-                asyncio.TimeoutError,
-            ) as e:
-                last_exception = e
-                # Close the potentially broken session
-                if endpoint in self._http_sessions:
-                    try:
-                        await self._http_sessions[endpoint].close()
-                    except Exception:
-                        pass
-                    del self._http_sessions[endpoint]
-                
-                if attempt < SANDBOX_MAX_RETRIES - 1:
-                    backoff = SANDBOX_RETRY_BACKOFF * (2 ** attempt)  # Exponential backoff
-                    logger.warning(
-                        f"Transient connection error on attempt {attempt + 1}/{SANDBOX_MAX_RETRIES}, "
-                        f"retrying in {backoff}s: {type(e).__name__}: {e}"
-                    )
-                    await asyncio.sleep(backoff)
-                else:
-                    logger.error(
-                        f"Failed after {SANDBOX_MAX_RETRIES} attempts: {type(e).__name__}: {e}"
-                    )
-        
-        # All retries exhausted, raise the last exception
-        raise last_exception
+        return await self._request_with_retry(endpoint, "/session/run", payload)
     
     async def destroy_session(self, session_id: str) -> bool:
         """
-        Destroy a session and clean up resources.
+        Destroy a session and clean up resources. Best-effort with minimal retries.
         
-        Automatically routes to the correct container based on session_id hash.
+        If the container is unreachable, the session will be cleaned up by the
+        server's idle timeout (default 1 hour).
         
         Args:
             session_id: Session to destroy
@@ -307,19 +385,14 @@ class SessionClient:
             True if successful
         """
         endpoint = self._get_endpoint_for_session(session_id)
-        http_session = await self._get_http_session(endpoint)
-        
         payload = {"session_id": session_id}
         
         try:
-            async with http_session.post(
-                f"{endpoint}/session/destroy",
-                json=payload,
-            ) as response:
-                result = await response.json()
-                # Clean up the endpoint mapping
-                self._session_endpoints.pop(session_id, None)
-                return result.get("status") == "Success"
+            result = await self._request_with_retry(
+                endpoint, "/session/destroy", payload, max_retries=2,
+            )
+            self._session_endpoints.pop(session_id, None)
+            return result.get("status") == "Success"
         except Exception as e:
             logger.warning(f"Failed to destroy session {session_id}: {e}")
             self._session_endpoints.pop(session_id, None)
@@ -514,6 +587,7 @@ class FusionAgentLoop(AgentLoopBase):
             
             curr_input = [tok for tok in prompt_ids]
             all_output_with_tool = list()
+            all_log_probs = list()  # Set to None if any generate() call lacks log_probs
             fetched_files = np.array(dict())
             
             with simple_timer("generate_sequences_all_turns", metrics):
@@ -532,6 +606,16 @@ class FusionAgentLoop(AgentLoopBase):
                     
                     all_output_with_tool += output.token_ids
                     mask += [1] * len(output.token_ids)
+                    if output.log_probs is not None and all_log_probs is not None:
+                        assert len(output.log_probs) == len(output.token_ids), (
+                            f"log_probs length {len(output.log_probs)} != "
+                            f"token_ids length {len(output.token_ids)}"
+                        )
+                        all_log_probs += output.log_probs
+                    else:
+                        # If any generation call lacks log_probs, the entire
+                        # trajectory's log_probs are unusable -- return None.
+                        all_log_probs = None
                     
                     decoded_output = await self.loop.run_in_executor(
                         None,
@@ -611,6 +695,8 @@ class FusionAgentLoop(AgentLoopBase):
                     
                     curr_input += cmd_message_ids
                     all_output_with_tool += cmd_message_ids
+                    if all_log_probs is not None:
+                        all_log_probs += [0.0] * len(cmd_message_ids)
                     mask += [0] * len(cmd_message_ids)
                     
                     if len(mask) >= self.response_length:
@@ -619,10 +705,20 @@ class FusionAgentLoop(AgentLoopBase):
                     num_turns += 1
 
             # Prepare output
-            assert len(mask) == len(all_output_with_tool)
+            assert len(mask) == len(all_output_with_tool), (
+                f"Length mismatch: mask={len(mask)}, output={len(all_output_with_tool)}"
+            )
+            if all_log_probs is not None:
+                assert len(all_log_probs) == len(all_output_with_tool), (
+                    f"Length mismatch: log_probs={len(all_log_probs)}, "
+                    f"output={len(all_output_with_tool)}"
+                )
+                all_log_probs = all_log_probs[:self.response_length]
             mask = mask[:self.response_length]
             all_output_with_tool = all_output_with_tool[:self.response_length]
             assert len(mask) == len(all_output_with_tool)
+            if all_log_probs is not None:
+                assert len(all_log_probs) == len(all_output_with_tool)
 
             # Final file fetch - ensure we get the requested files even if the last
             # command was blocked or had issues
@@ -645,7 +741,7 @@ class FusionAgentLoop(AgentLoopBase):
                 prompt_ids=prompt_ids[:self.prompt_length],
                 response_ids=all_output_with_tool[:self.response_length],
                 response_mask=mask[:self.response_length],
-                response_logprobs=output.log_probs[:self.response_length] if output.log_probs else None,
+                response_logprobs=all_log_probs if all_log_probs else None,
                 num_turns=num_turns,
                 metrics=metrics,
                 extra_fields=dict(
