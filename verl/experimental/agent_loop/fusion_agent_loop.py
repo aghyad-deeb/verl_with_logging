@@ -220,9 +220,42 @@ class SessionClient:
                     result = await response.json()
 
                 if result.get("status") != "Success":
-                    raise RuntimeError(f"Failed to create session: {result.get('message', 'Unknown error')}")
+                    error_msg = result.get('message', 'Unknown error')
+                    # Check if this is a transient server-side error that should be retried
+                    # File system errors like "[Errno 2] No such file or directory" are often transient
+                    is_transient = any(indicator in str(error_msg) for indicator in [
+                        '[Errno 2]',  # No such file or directory
+                        '[Errno 28]', # No space left on device
+                        'Max sessions',  # Session limit reached temporarily
+                        'timed out',  # Timeout errors
+                        'temporarily unavailable',
+                    ])
+
+                    if is_transient:
+                        raise RuntimeError(f"Transient server error: {error_msg}")
+                    else:
+                        # Non-transient error (e.g., "Session already exists"), fail immediately
+                        raise RuntimeError(f"Failed to create session: {error_msg}")
 
                 return session_id
+
+            except RuntimeError as e:
+                # Check if this is a transient error we flagged for retry
+                if "Transient server error:" in str(e):
+                    last_exception = e
+                    if attempt < SANDBOX_MAX_RETRIES - 1:
+                        backoff = SANDBOX_RETRY_BACKOFF * (2 ** attempt)
+                        logger.warning(
+                            f"Transient server-side error during session creation on attempt {attempt + 1}/{SANDBOX_MAX_RETRIES}, "
+                            f"retrying in {backoff}s: {e}"
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        logger.error(f"Failed to create session after {SANDBOX_MAX_RETRIES} attempts: {e}")
+                else:
+                    # Non-transient RuntimeError, raise immediately
+                    raise
 
             except (
                 aiohttp.ClientConnectionError,
