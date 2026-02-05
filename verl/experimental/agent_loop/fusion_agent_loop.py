@@ -33,6 +33,7 @@ Environment variables:
     - SANDBOX_CLIENT_TIMEOUT: HTTP client timeout in seconds (default: 120)
     - SANDBOX_RUN_TIMEOUT: Code execution timeout in seconds (default: 10)
 """
+import json
 import logging
 import os
 import base64
@@ -421,6 +422,33 @@ class FusionAgentLoop(AgentLoopBase):
     - SANDBOX_RUN_TIMEOUT: Execution timeout (default: 10)
     """
     
+    _EMPTY_FILES = np.array({})
+    
+    _DANGEROUS_PATTERNS = [
+        "pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff",
+        "rm -rf /", ":(){ :|:& };:",
+        "sudo",
+        "while true", "while :", "for ((",
+        "exec(", "eval(",
+        "malware", "exploit", "payload",
+        "contact_server", "/var/run/",
+        "destroy",
+        "nmap", "netcat", " nc ",
+        "| sh", "| bash",
+        "/.config/", "/.local/",
+        "/tmp/mutation/",
+        "$SHELL",
+        "nuitka",
+        "curl -X POST http://",
+        "readd_bash_add",
+        "read -p",
+        "ping ", "ping\t",
+        "find /",
+        "/dev/urandom", "/dev/random", "/dev/zero",
+        "```",
+        "tail -f", "watch ",
+    ]
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
@@ -449,35 +477,38 @@ class FusionAgentLoop(AgentLoopBase):
         return files
 
     def extract_bash_command(self, text, prefix="<bash>", suffix="</bash>"):
-        """Extract bash command from model output."""
-        assert isinstance(text, str), f"text must be a string, got {type(text)}"
-        assert isinstance(prefix, str), f"prefix must be a string, got {type(prefix)}"
-        assert isinstance(suffix, str), f"suffix must be a string, got {type(suffix)}"
-        assert len(prefix) > 0, "prefix cannot be empty"
-        assert len(suffix) > 0, "suffix cannot be empty"
+        """Extract the last valid bash command from model output.
         
+        Finds the last occurrence of prefix...suffix in the text (after any
+        </think> tag). Returns the content between them, or None if no valid
+        pair is found.
+        """
+        assert isinstance(text, str), f"text must be a string, got {type(text)}"
+        assert isinstance(prefix, str) and prefix, "prefix must be a non-empty string"
+        assert isinstance(suffix, str) and suffix, "suffix must be a non-empty string"
+        
+        # Strip chain-of-thought wrapper if present
         eot = "</think>"
-        if eot in text:
-            text = text.split(eot)[-1]
+        eot_pos = text.rfind(eot)
+        if eot_pos != -1:
+            text = text[eot_pos + len(eot):]
+        
+        # Search backwards for the last valid <bash>...</bash> pair
+        search_end = len(text)
+        while True:
+            prefix_pos = text.rfind(prefix, 0, search_end)
+            if prefix_pos == -1:
+                return None
             
-        if prefix not in text:
-            return None
-
-        after_prefix = text.split(prefix)[-1]
-        i = -1
-        while suffix not in after_prefix:
-            i -= 1
-            if len(text.split(prefix)) < abs(i):
-                break
-            after_prefix = text.split(prefix)[i]
-
-        if suffix not in after_prefix:
-            return None
-
-        ret = after_prefix.split(suffix)[0]
-        if ret.startswith("\n"):
-            ret = ret[1:]
-        return ret
+            content_start = prefix_pos + len(prefix)
+            suffix_pos = text.find(suffix, content_start)
+            if suffix_pos != -1:
+                # Found a valid pair
+                cmd = text[content_start:suffix_pos]
+                return cmd.lstrip("\n")
+            
+            # No matching suffix — try the previous prefix occurrence
+            search_end = prefix_pos
 
     def has_junk_artifacts(self, code):
         """Check for markdown/XML artifacts that could cause issues."""
@@ -494,21 +525,26 @@ class FusionAgentLoop(AgentLoopBase):
             return np.array(out_dict)
         except Exception as e:
             logger.warning(f"Failed to decode files: {e}")
-            return np.array({})
+            return self._EMPTY_FILES
 
     def create_command_output(self, result: Dict) -> str:
-        """Format command result for the model."""
+        """Format command result for the model.
+        
+        On success, returns stdout. On failure, returns stdout (if any)
+        followed by the error, so the model sees partial output from
+        commands that produced output before failing.
+        """
+        stdout = result.get("stdout", "")
         if result.get("status") == "Success":
-            return result.get("stdout", "")
-        else:
-            stderr = result.get("stderr", "")
-            message = result.get("message", "")
-            if stderr:
-                return f"Execution Failed: {stderr}"
-            elif message:
-                return f"Execution Failed: {message}"
-            else:
-                return f"Execution Failed: {result}"
+            return stdout
+        
+        stderr = result.get("stderr", "")
+        message = result.get("message", "")
+        error = stderr or message or str(result)
+        
+        if stdout:
+            return f"{stdout}\nExecution Failed: {error}"
+        return f"Execution Failed: {error}"
 
     async def execute_agent_command(self, command: str) -> tuple:
         """
@@ -544,7 +580,6 @@ class FusionAgentLoop(AgentLoopBase):
         
         # Parse tools kwargs
         assert "tools_kwargs" in kwargs
-        import json
         self.tools_kwargs = json.loads(kwargs["tools_kwargs"])
         assert "files_dict" in self.tools_kwargs, f"{self.tools_kwargs=}"
         self.files_to_fetch = self.tools_kwargs.get("files_to_fetch", [])
@@ -585,10 +620,10 @@ class FusionAgentLoop(AgentLoopBase):
                 ),
             )
             
-            curr_input = [tok for tok in prompt_ids]
+            curr_input = list(prompt_ids)
             all_output_with_tool = list()
             all_log_probs = list()  # Set to None if any generate() call lacks log_probs
-            fetched_files = np.array(dict())
+            fetched_files = self._EMPTY_FILES
             
             with simple_timer("generate_sequences_all_turns", metrics):
                 while num_turns < max_num_turns:
@@ -639,57 +674,26 @@ class FusionAgentLoop(AgentLoopBase):
                     curr_input += output.token_ids
 
                     # Check for dangerous commands
-                    dangerous_patterns = [
-                        "pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff",
-                        "rm -rf /", ":(){ :|:& };:",
-                        "sudo",
-                        "while true", "while :", "for ((",
-                        "exec(", "eval(",
-                        "malware", "exploit", "payload",
-                        "contact_server", "/var/run/",
-                        "destroy",
-                        "nmap", "netcat", " nc ",
-                        "| sh", "| bash",
-                        "/.config/", "/.local/",
-                        "/tmp/mutation/",
-                        "$SHELL",
-                        "nuitka",
-                        "curl -X POST http://",
-                        "readd_bash_add",
-                        "read -p",
-                        "ping ", "ping\t",
-                        "find /",
-                        "/dev/urandom", "/dev/random", "/dev/zero",
-                        "```",
-                        "tail -f", "watch ",
-                    ]
-                    is_dangerous = any(pattern in cmd for pattern in dangerous_patterns)
+                    is_dangerous = any(pattern in cmd for pattern in self._DANGEROUS_PATTERNS)
 
                     if is_dangerous:
                         cmd_output = f"bash: {cmd.split()[0]}: Operation not permitted"
-                        fetched_files = np.array(dict())
+                        fetched_files = self._EMPTY_FILES
                     elif self.has_junk_artifacts(cmd):
                         cmd_output = "Command contains invalid artifacts"
-                        fetched_files = np.array(dict())
+                        fetched_files = self._EMPTY_FILES
                     else:
                         with simple_timer("tool_calls", metrics):
                             cmd_output, fetched_files = await self.execute_agent_command(cmd)
                         metrics["tool_calls_count"] = metrics.get("tool_calls_count", 0) + 1
                     
-                    cmd_message = [{
-                        "role": "tool",
-                        "content": cmd_output
-                    }]
-                    
-                    conversation_messages.append({
-                        "role": "tool",
-                        "content": cmd_output
-                    })
+                    tool_msg = {"role": "tool", "content": cmd_output}
+                    conversation_messages.append(tool_msg)
                     
                     cmd_message_ids = await self.loop.run_in_executor(
                         None,
                         lambda: self.tokenizer.apply_chat_template(
-                            cmd_message, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                            [tool_msg], add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
                         ),
                     )
                     
