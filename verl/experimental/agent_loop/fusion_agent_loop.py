@@ -185,39 +185,76 @@ class SessionClient:
     ) -> str:
         """
         Create a new bash session.
-        
+
         The session_id is generated client-side and used for consistent hashing
         to determine which container handles this session.
-        
+
         Args:
             session_id: Client-generated session identifier (used for routing)
             files: Dict of filename -> base64-encoded content
             startup_commands: Commands to run on initialization
             env: Additional environment variables
-            
+
         Returns:
             session_id for use in subsequent commands
         """
         endpoint = self._get_endpoint_for_session(session_id)
-        http_session = await self._get_http_session(endpoint)
-        
+
         payload = {
             "session_id": session_id,  # Pass client-generated ID to server
             "files": files or {},
             "startup_commands": startup_commands or [],
             "env": env or {},
         }
-        
-        async with http_session.post(
-            f"{endpoint}/session/create",
-            json=payload,
-        ) as response:
-            result = await response.json()
-            
-        if result.get("status") != "Success":
-            raise RuntimeError(f"Failed to create session: {result.get('message', 'Unknown error')}")
-        
-        return session_id
+
+        last_exception = None
+        for attempt in range(SANDBOX_MAX_RETRIES):
+            try:
+                # Get fresh http session for each attempt (in case connection was broken)
+                http_session = await self._get_http_session(endpoint)
+
+                async with http_session.post(
+                    f"{endpoint}/session/create",
+                    json=payload,
+                ) as response:
+                    result = await response.json()
+
+                if result.get("status") != "Success":
+                    raise RuntimeError(f"Failed to create session: {result.get('message', 'Unknown error')}")
+
+                return session_id
+
+            except (
+                aiohttp.ClientConnectionError,
+                aiohttp.ClientOSError,
+                aiohttp.ServerDisconnectedError,
+                ConnectionResetError,
+                OSError,
+                asyncio.TimeoutError,
+            ) as e:
+                last_exception = e
+                # Close the potentially broken session
+                if endpoint in self._http_sessions:
+                    try:
+                        await self._http_sessions[endpoint].close()
+                    except Exception:
+                        pass
+                    del self._http_sessions[endpoint]
+
+                if attempt < SANDBOX_MAX_RETRIES - 1:
+                    backoff = SANDBOX_RETRY_BACKOFF * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Transient connection error during session creation on attempt {attempt + 1}/{SANDBOX_MAX_RETRIES}, "
+                        f"retrying in {backoff}s: {type(e).__name__}: {e}"
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.error(
+                        f"Failed to create session after {SANDBOX_MAX_RETRIES} attempts: {type(e).__name__}: {e}"
+                    )
+
+        # All retries exhausted, raise the last exception
+        raise last_exception
     
     async def run_command(
         self,
