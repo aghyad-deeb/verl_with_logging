@@ -443,7 +443,6 @@ class FusionAgentLoop(AgentLoopBase):
         "readd_bash_add",
         "read -p",
         "ping ", "ping\t",
-        "find /",
         "/dev/urandom", "/dev/random", "/dev/zero",
         "```",
         "tail -f", "watch ",
