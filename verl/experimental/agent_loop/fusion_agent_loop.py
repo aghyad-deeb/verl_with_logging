@@ -125,6 +125,7 @@ class SessionClient:
         run_timeout: float = SANDBOX_RUN_TIMEOUT,
         max_retries: int = SANDBOX_MAX_RETRIES,
         retry_backoff: float = SANDBOX_RETRY_BACKOFF,
+        use_overlay: bool = False,
     ):
         """
         Initialize the session client.
@@ -135,6 +136,8 @@ class SessionClient:
             run_timeout: Default command execution timeout in seconds.
             max_retries: Max retries for run_command (per container).
             retry_backoff: Base backoff in seconds (doubles each attempt).
+            use_overlay: If True, use /overlay-session/ endpoints for OverlayFS
+                         isolated sessions. If False, use /session/ (default).
         """
         import hashlib
         self._hashlib = hashlib
@@ -150,6 +153,7 @@ class SessionClient:
         self.run_timeout = run_timeout
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+        self._session_prefix = "/overlay-session" if use_overlay else "/session"
         
         # One HTTP session per endpoint for connection pooling
         self._http_sessions: Dict[str, aiohttp.ClientSession] = {}
@@ -311,7 +315,7 @@ class SessionClient:
         for endpoint in ordered_endpoints:
             try:
                 result = await self._request_with_retry(
-                    endpoint, "/session/create", payload,
+                    endpoint, f"{self._session_prefix}/create", payload,
                     max_retries=retries_per_container,
                 )
                 if result.get("status") == "Success":
@@ -373,7 +377,7 @@ class SessionClient:
             "timeout": timeout or self.run_timeout,
             "fetch_files": fetch_files or [],
         }
-        return await self._request_with_retry(endpoint, "/session/run", payload)
+        return await self._request_with_retry(endpoint, f"{self._session_prefix}/run", payload)
     
     async def destroy_session(self, session_id: str) -> bool:
         """
@@ -393,7 +397,7 @@ class SessionClient:
         
         try:
             result = await self._request_with_retry(
-                endpoint, "/session/destroy", payload, max_retries=2,
+                endpoint, f"{self._session_prefix}/destroy", payload, max_retries=2,
             )
             self._session_endpoints.pop(session_id, None)
             return result.get("status") == "Success"
@@ -451,6 +455,8 @@ class FusionAgentLoop(AgentLoopBase):
         "tail -f", "watch ",
     ]
     
+    _use_overlay = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.prompt_length = self.config.actor_rollout_ref.rollout.prompt_length
@@ -462,6 +468,7 @@ class FusionAgentLoop(AgentLoopBase):
             endpoints=SANDBOX_ENDPOINTS,
             client_timeout=SANDBOX_CLIENT_TIMEOUT,
             run_timeout=SANDBOX_RUN_TIMEOUT,
+            use_overlay=self._use_overlay,
         )
         
         # Current session ID (set per episode)
@@ -777,3 +784,22 @@ class FusionAgentLoop(AgentLoopBase):
                 with simple_timer("session_close_http", metrics):
                     await self.session_client.close()
             await self.session_client.close()
+
+
+@register("fusion_agent_loop_overlay")
+class FusionAgentLoopOverlay(FusionAgentLoop):
+    """
+    FusionAgentLoop variant that uses OverlayFS-isolated sessions.
+
+    Identical to FusionAgentLoop but routes all session API calls through
+    /overlay-session/ endpoints, giving each session its own filesystem view
+    via OverlayFS. This means:
+    - extra_files at absolute paths are invisible to other sessions
+    - writes in one session don't leak to another
+    - destroy unmounts everything cleanly
+
+    Select this loop by setting agent_name to "fusion_agent_loop_overlay"
+    in your config (no environment variable needed).
+    """
+
+    _use_overlay = True
