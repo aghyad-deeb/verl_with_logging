@@ -264,6 +264,7 @@ class SessionClient:
         self,
         session_id: str,
         files: Optional[Dict[str, str]] = None,
+        extra_files: Optional[Dict[str, str]] = None,
         startup_commands: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> str:
@@ -276,7 +277,8 @@ class SessionClient:
         
         Args:
             session_id: Client-generated session identifier (used for routing)
-            files: Dict of filename -> base64-encoded content
+            files: Dict of filename -> base64-encoded content (relative to working dir)
+            extra_files: Dict of absolute_path -> base64-encoded content (placed outside working dir)
             startup_commands: Commands to run on initialization
             env: Additional environment variables
             
@@ -289,6 +291,7 @@ class SessionClient:
         payload = {
             "session_id": session_id,
             "files": files or {},
+            "extra_files": extra_files or {},
             "startup_commands": startup_commands or [],
             "env": env or {},
         }
@@ -586,6 +589,14 @@ class FusionAgentLoop(AgentLoopBase):
         files_dict = self.tools_kwargs["files_dict"]
         assert isinstance(files_dict, list), f"{files_dict=}"
         files = self.flatten_structure(files_dict)
+        
+        # Parse extra files (placed at absolute paths outside working directory)
+        extra_files_dict = self.tools_kwargs.get("extra_files_dict", [])
+        if extra_files_dict:
+            assert isinstance(extra_files_dict, list), f"{extra_files_dict=}"
+            extra_files = self.flatten_structure(extra_files_dict)
+        else:
+            extra_files = {}
 
         # Create a new session for this episode
         # Generate session_id client-side for consistent hashing across multiple containers
@@ -597,6 +608,7 @@ class FusionAgentLoop(AgentLoopBase):
                 self.current_session_id = await self.session_client.create_session(
                     session_id=session_id,
                     files=files,
+                    extra_files=extra_files,
                     startup_commands=startup_commands,
                 )
             except Exception as e:
@@ -764,3 +776,4 @@ class FusionAgentLoop(AgentLoopBase):
             if self.session_client:
                 with simple_timer("session_close_http", metrics):
                     await self.session_client.close()
+            await self.session_client.close()
