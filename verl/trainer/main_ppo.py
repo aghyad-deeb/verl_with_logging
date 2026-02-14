@@ -76,9 +76,12 @@ def run_ppo(config, task_runner_class=None) -> None:
         print(f"ray init kwargs: {ray_init_kwargs}")
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
+    import sys; sys.stdout.flush(); sys.stderr.flush()
+    print("[DEBUG] Creating TaskRunner remote class...", flush=True)
     if task_runner_class is None:
         task_runner_class = ray.remote(num_cpus=1)(TaskRunner)  # please make sure main_task is not scheduled on head
 
+    print("[DEBUG] TaskRunner class created. Checking profiler config...", flush=True)
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
     if (
@@ -95,8 +98,11 @@ def run_ppo(config, task_runner_class=None) -> None:
         )
         runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
     else:
+        print("[DEBUG] Creating TaskRunner actor...", flush=True)
         runner = task_runner_class.remote()
+    print("[DEBUG] TaskRunner actor created. Calling runner.run.remote(config)...", flush=True)
     ray.get(runner.run.remote(config))
+    print("[DEBUG] runner.run.remote(config) completed.", flush=True)
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
     # This file is used for performance analysis
@@ -275,8 +281,10 @@ class TaskRunner:
 
         from verl.utils.fs import copy_to_local
 
+        print(f"[DEBUG] TaskRunner.run() STARTED on hostname: {socket.gethostname()}, PID: {os.getpid()}", flush=True)
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
+        print("[DEBUG] Config resolved. Adding workers...", flush=True)
 
         actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)
         self.add_critic_worker(config)
