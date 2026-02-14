@@ -539,21 +539,34 @@ class FusionAgentLoop(AgentLoopBase):
     def create_command_output(self, result: Dict) -> str:
         """Format command result for the model.
         
-        On success, returns stdout. On failure, returns stdout (if any)
-        followed by the error, so the model sees partial output from
-        commands that produced output before failing.
+        Mimics real bash output: stdout followed by stderr when present.
+        No synthetic prefixes like "Execution Failed:" — the model should
+        see exactly what a terminal would show.
         """
         stdout = result.get("stdout", "")
         if result.get("status") == "Success":
             return stdout
         
         stderr = result.get("stderr", "")
+        # message is a sandbox-level error (e.g. timeout), not a shell error
         message = result.get("message", "")
-        error = stderr or message or str(result)
         
+        # Combine stdout + stderr like a real terminal would.
+        # In a real shell, stderr is interleaved with stdout; here they're
+        # separated by the sandbox, so we append stderr after stdout.
+        parts = []
         if stdout:
-            return f"{stdout}\nExecution Failed: {error}"
-        return f"Execution Failed: {error}"
+            parts.append(stdout)
+        if stderr:
+            parts.append(stderr)
+        
+        # If the sandbox itself reported an error (timeout, session issue),
+        # surface it — but only if there's no shell output at all, since
+        # that means the command never ran or was killed externally.
+        if not parts and message:
+            parts.append(message)
+        
+        return "\n".join(parts)
 
     async def execute_agent_command(self, command: str) -> tuple:
         """

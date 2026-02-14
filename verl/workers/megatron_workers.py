@@ -421,12 +421,21 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             print(f"actor_module: {len(actor_module)}")
             if self.config.actor.load_weight:
                 if self.config.actor.megatron.use_dist_checkpointing:
-                    load_mcore_dist_weights(
-                        actor_module,
-                        self.config.actor.megatron.dist_checkpointing_path,
-                        is_value_model=False,
-                        prefix=self.config.actor.megatron.dist_checkpointing_prefix,
-                    )
+                    #~ Trying to load hf and then use dist_checkpointing
+                    if self.config.actor.megatron.load_hf:
+                        if self.bridge is not None:
+                            local_model_path = get_hf_model_path(self.config)
+                            if self.vanilla_bridge:
+                                self.bridge.load_weights(actor_module, local_model_path)
+                            else:
+                                self.bridge.load_hf_weights(actor_module, local_model_path)
+                    else:
+                        load_mcore_dist_weights(
+                            actor_module,
+                            self.config.actor.megatron.dist_checkpointing_path,
+                            is_value_model=False,
+                            prefix=self.config.actor.megatron.dist_checkpointing_prefix,
+                        )
                 else:
                     if self.bridge is not None:
                         local_model_path = get_hf_model_path(self.config)
