@@ -90,10 +90,10 @@ def check_server_running(url: str = None) -> bool:
 
 
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "120"))
-SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "8"))
+SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
 
 # Retry configuration for transient connection errors
-SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "10"))
+SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "4"))
 SANDBOX_RETRY_BACKOFF = float(os.getenv("SANDBOX_RETRY_BACKOFF", "1.0"))  # Base backoff in seconds
 
 
