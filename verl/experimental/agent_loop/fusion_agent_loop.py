@@ -90,7 +90,7 @@ def check_server_running(url: str = None) -> bool:
 
 
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "120"))
-SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
+SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "8"))
 
 # Retry configuration for transient connection errors
 SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "10"))
@@ -309,7 +309,7 @@ class SessionClient:
         
         # Retry budget per container: smaller than run_command retries since
         # we can failover to another container instead
-        retries_per_container = 3
+        retries_per_container = 4
         
         last_exception = None
         for endpoint in ordered_endpoints:
@@ -536,6 +536,11 @@ class FusionAgentLoop(AgentLoopBase):
             logger.warning(f"Failed to decode files: {e}")
             return self._EMPTY_FILES
 
+    # Rough chars-per-token ratio for estimating token counts from text length.
+    # English/code averages ~3-4 chars per token; we use 3 to be conservative
+    # (over-estimate tokens → under-estimate char budget → safe side).
+    _CHARS_PER_TOKEN_ESTIMATE = 3
+    
     def create_command_output(self, result: Dict) -> str:
         """Format command result for the model.
         
@@ -567,6 +572,38 @@ class FusionAgentLoop(AgentLoopBase):
             parts.append(message)
         
         return "\n".join(parts)
+
+    def truncate_to_token_budget(self, text: str, tokens_remaining: int) -> str:
+        """Truncate text so it fits within the remaining token budget.
+        
+        Uses a conservative chars-per-token estimate to avoid tokenizing
+        huge strings (e.g., 53MB of `find /` output). Keeps the first
+        and last portions so the model sees both the beginning (headers,
+        first results) and end (final output, error messages) of the
+        command output.
+        
+        Args:
+            text: The raw command output text.
+            tokens_remaining: How many tokens are left in the response budget.
+            
+        Returns:
+            The text, truncated if necessary to fit the budget.
+        """
+        max_chars = tokens_remaining * self._CHARS_PER_TOKEN_ESTIMATE
+        if len(text) <= max_chars:
+            return text
+        
+        # Keep first 60% and last 40% of the budget (beginning is usually
+        # more informative — headers, first results, etc.)
+        head_chars = int(max_chars * 0.6)
+        tail_chars = max_chars - head_chars
+        omitted = len(text) - head_chars - tail_chars
+        
+        return (
+            text[:head_chars]
+            + f"\n\n... ({omitted:,} characters truncated) ...\n\n"
+            + text[-tail_chars:]
+        )
 
     async def execute_agent_command(self, command: str) -> tuple:
         """
@@ -717,6 +754,14 @@ class FusionAgentLoop(AgentLoopBase):
                         with simple_timer("tool_calls", metrics):
                             cmd_output, fetched_files = await self.execute_agent_command(cmd)
                         metrics["tool_calls_count"] = metrics.get("tool_calls_count", 0) + 1
+                    
+                    # Truncate tool output to fit the remaining token budget.
+                    # This prevents commands like `find /` (53MB+) from blowing
+                    # up tokenization time, context length, and trace log sizes.
+                    tokens_used = len(curr_input)
+                    total_budget = self.prompt_length + self.response_length
+                    tokens_remaining = max(total_budget - tokens_used, 256)
+                    cmd_output = self.truncate_to_token_budget(cmd_output, tokens_remaining)
                     
                     tool_msg = {"role": "tool", "content": cmd_output}
                     conversation_messages.append(tool_msg)
