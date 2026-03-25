@@ -95,7 +95,9 @@ class ServerAdapter(BaseRollout):
             self.sleep_level = VLLM_SLEEP_LEVEL
 
         self.device_uuid = get_device_uuid(get_device_id())
-        self.zmq_handle = f"ipc:///tmp/rl-colocate-zmq-{self.device_uuid}.sock"
+        # Use TMPDIR (node-local per-job) instead of /tmp (host-shared, permission issues in Singularity)
+        zmq_dir = os.environ.get("TMPDIR", "/tmp")
+        self.zmq_handle = f"ipc://{zmq_dir}/rl-colocate-zmq-{self.device_uuid}.sock"
 
         self.use_shm = not is_support_ipc()
         if self.use_shm:
