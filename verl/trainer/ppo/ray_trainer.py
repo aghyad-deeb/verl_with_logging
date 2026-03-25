@@ -1525,8 +1525,6 @@ class RayPPOTrainer:
                     with marked_timer("adv", timing_raw, color="brown"):
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list]
-                        if self.config.reward_model.launch_reward_fn_async and not self.use_reward_loop:
-                            reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         temp = dict()
                         for key in reward_extra_infos_dict:
                             if key != "score":
