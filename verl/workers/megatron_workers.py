@@ -647,6 +647,12 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             log_gpu_memory_usage("After MegatronPPOActor init", logger=logger)
 
         if self._is_rollout:
+            # Flush CUDA caching allocator before vLLM init. After actor offload,
+            # storage().resize_(0) marks memory as unused in PyTorch but the caching
+            # allocator still holds the blocks. cudaMemGetInfo (used by vLLM to check
+            # free memory) won't see the freed memory until empty_cache() is called.
+            aggressive_empty_cache(force_sync=True)
+            log_gpu_memory_usage("Before rollout init (after cache flush)", logger=logger)
             with use_original_torch_compile():
                 self._build_rollout(trust_remote_code=self.config.model.get("trust_remote_code", False))
             log_gpu_memory_usage("After rollout init", logger=logger)
