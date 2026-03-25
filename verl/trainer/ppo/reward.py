@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import inspect
 import multiprocessing
+import warnings
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, cast
+
+import ray
+import torch
 
 from verl import DataProto
 from verl.utils.reward_score import default_compute_score
@@ -159,8 +163,7 @@ def extract_reward(batch: DataProto):
     return reward_tensor, reward_extra_infos_dict
 
 
-@tqbridge(put_data=False)
-def compute_reward(data: DataProto, reward_fn: AbstractRewardManager, config=None) -> tuple[torch.Tensor, dict[str, Any]]:
+def compute_reward(data: DataProto, reward_fn, config=None) -> tuple[torch.Tensor, dict[str, Any]]:
     """
     Compute reward using the reward function.
     """
