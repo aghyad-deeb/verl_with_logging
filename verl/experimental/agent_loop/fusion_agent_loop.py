@@ -322,18 +322,31 @@ class SessionClient:
                     # Pin this session to the container that accepted it
                     self._session_endpoints[session_id] = endpoint
                     return session_id
-                else:
-                    # Application-level failure (e.g., max sessions reached,
-                    # duplicate session ID). Try the next container.
-                    last_exception = RuntimeError(
-                        f"Session creation failed on {endpoint}: "
-                        f"{result.get('message', 'Unknown error')}"
+
+                # Check if a previous timed-out attempt actually created
+                # the session on this container.  Session IDs are client-
+                # generated UUIDs, so "already exists" for OUR id means
+                # the create succeeded but the HTTP response was lost.
+                msg = result.get("message", "")
+                if "already exists" in msg and session_id in msg:
+                    logger.info(
+                        f"Reclaimed phantom session {session_id} on "
+                        f"{endpoint} (previous create succeeded but "
+                        f"response timed out)"
                     )
-                    logger.warning(
-                        f"Session creation returned status={result.get('status')} "
-                        f"on {endpoint}, trying next container: "
-                        f"{result.get('message', '')}"
-                    )
+                    self._session_endpoints[session_id] = endpoint
+                    return session_id
+
+                # Genuine application-level failure (e.g., max sessions
+                # reached). Try the next container.
+                last_exception = RuntimeError(
+                    f"Session creation failed on {endpoint}: "
+                    f"{msg or 'Unknown error'}"
+                )
+                logger.warning(
+                    f"Session creation returned status={result.get('status')} "
+                    f"on {endpoint}, trying next container: {msg}"
+                )
             except self._NON_RETRYABLE:
                 raise
             except Exception as e:
@@ -630,8 +643,20 @@ class FusionAgentLoop(AgentLoopBase):
             timeout=self.session_client.run_timeout,
             fetch_files=self.files_to_fetch,
         )
-        
-        fetched_files = self.decode_fetched_files(result.get("files", {}))
+
+        # Detect sandbox infrastructure errors (e.g. mount namespace failures).
+        # These are not the agent's fault — retry once before giving up.
+        if result.get("return_code") == 99 and "HOME_ISO" in result.get("stderr", ""):
+            logger.warning(f"HOME_ISO failure, retrying command: {result.get('stderr', '')[:200]}")
+            result = await self.session_client.run_command(
+                session_id=self.current_session_id,
+                command=command,
+                timeout=self.session_client.run_timeout,
+                fetch_files=self.files_to_fetch,
+            )
+
+        raw_files = result.get("files", {})
+        fetched_files = self.decode_fetched_files(raw_files)
         return self.create_command_output(result), fetched_files
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
@@ -811,12 +836,13 @@ class FusionAgentLoop(AgentLoopBase):
                             timeout=5,
                             fetch_files=self.files_to_fetch,
                         )
-                        fetched_files = self.decode_fetched_files(final_result.get("files", {}))
+                        final_raw_files = final_result.get("files", {})
+                        fetched_files = self.decode_fetched_files(final_raw_files)
                     except Exception as e:
                         logger.warning(f"Final file fetch failed: {e}")
 
             assert isinstance(fetched_files, np.ndarray)
-            
+
             return AgentLoopOutput(
                 prompt_ids=prompt_ids[:self.prompt_length],
                 response_ids=all_output_with_tool[:self.response_length],

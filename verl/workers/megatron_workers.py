@@ -704,6 +704,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
                 self.weight_converter = get_mcore_weight_converter(self.actor_model_config, self.dtype)
 
         # Free cached GPU memory so colocated vLLM processes can see it via cudaMemGetInfo
+        get_torch_device().empty_cache()
         aggressive_empty_cache(force_sync=True)
         log_gpu_memory_usage("After init_model finish", logger=logger)
 
