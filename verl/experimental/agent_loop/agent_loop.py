@@ -590,6 +590,7 @@ class AgentLoopWorker:
         sampling_params: dict[str, Any],
         agent_name: str,
         raw_prompt = None,
+        validate = False,
         **kwargs,
     ) -> _InternalAgentLoopOutput:
         """Inner agent loop decorated with rollout_trace_op to capture reward."""
@@ -611,7 +612,7 @@ class AgentLoopWorker:
             data_config=DictConfigWrap(self.config.data),
         )
         output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-        return await self._agent_loop_postprocess(output, **kwargs)
+        return await self._agent_loop_postprocess(output, validate, **kwargs)
 
     async def _run_agent_loop(
         self,
@@ -634,6 +635,7 @@ class AgentLoopWorker:
             return await self._run_agent_loop_inner(
                 sampling_params=sampling_params,
                 agent_name=agent_name,
+                validate=trajectory["validate"],
                 **kwargs,
             )
 
