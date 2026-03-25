@@ -44,6 +44,7 @@ from typing import Any, Optional, Dict, List
 from uuid import uuid4
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
+from verl.utils.tokenizer import normalize_token_ids
 from verl.workers.rollout.replica import TokenOutput
 from verl.utils.profiler import simple_timer
 
@@ -704,15 +705,17 @@ class FusionAgentLoop(AgentLoopBase):
             request_id = uuid4().hex
             num_turns = 0
             max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
+            if max_num_turns is None:
+                max_num_turns = 5
             mask = list()
             
-            prompt_ids = await self.loop.run_in_executor(
+            raw_prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self.tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
                 ),
             )
-            
+            prompt_ids = normalize_token_ids(raw_prompt_ids)
             curr_input = list(prompt_ids)
             all_output_with_tool = list()
             all_log_probs = list()  # Set to None if any generate() call lacks log_probs
@@ -791,13 +794,13 @@ class FusionAgentLoop(AgentLoopBase):
                     tool_msg = {"role": "tool", "content": cmd_output}
                     conversation_messages.append(tool_msg)
                     
-                    cmd_message_ids = await self.loop.run_in_executor(
+                    raw_cmd_ids = await self.loop.run_in_executor(
                         None,
                         lambda: self.tokenizer.apply_chat_template(
                             [tool_msg], add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
                         ),
                     )
-                    
+                    cmd_message_ids = normalize_token_ids(raw_cmd_ids)
                     curr_input += cmd_message_ids
                     all_output_with_tool += cmd_message_ids
                     if all_log_probs is not None:
