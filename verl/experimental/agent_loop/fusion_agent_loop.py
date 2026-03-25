@@ -863,6 +863,7 @@ class FusionAgentLoop(AgentLoopBase):
                 response_ids=all_output_with_tool[:self.response_length],
                 response_mask=mask[:self.response_length],
                 response_logprobs=all_log_probs if all_log_probs else None,
+                multi_modal_data={},
                 num_turns=num_turns,
                 metrics=metrics,
                 extra_fields=dict(
