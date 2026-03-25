@@ -65,8 +65,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 # Default configuration constants
-DEFAULT_TIMEOUT = 600.0  # increased from 60 for large models
-DEFAULT_MAX_ATTEMPTS = 20  # increased from 3
+DEFAULT_TIMEOUT = 60.0
+DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_RETRY_DELAY = 2.0
 DEFAULT_MAX_CONNECTIONS = 2000
 DEFAULT_MAX_WAIT_TIME = 300.0
