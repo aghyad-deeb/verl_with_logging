@@ -155,6 +155,11 @@ class BucketedWeightSender:
 
     def _init_socket(self):
         """Initialize ZMQ REQ socket and bind."""
+        # Remove stale IPC socket file — ZMQ close() does NOT delete it,
+        # so a previous call leaves the file behind and the next bind() fails.
+        ipc_path = self.zmq_handle.replace("ipc://", "")
+        if os.path.exists(ipc_path):
+            os.unlink(ipc_path)
         self.socket = self.zmq_context.socket(zmq.REQ)
         self.socket.bind(self.zmq_handle)
 
