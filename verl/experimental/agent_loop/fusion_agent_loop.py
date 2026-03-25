@@ -792,15 +792,27 @@ class FusionAgentLoop(AgentLoopBase):
                     cmd_output = self.truncate_to_token_budget(cmd_output, tokens_remaining)
                     
                     tool_msg = {"role": "tool", "content": cmd_output}
-                    conversation_messages.append(tool_msg)
-                    
-                    raw_cmd_ids = await self.loop.run_in_executor(
+
+                    # Tokenize tool message via full-conversation delta.
+                    # Qwen3.5's chat template requires a user query in the messages,
+                    # so we can't tokenize [tool_msg] alone. Instead, tokenize the
+                    # conversation before and after appending, then take the delta.
+                    conv_before = list(conversation_messages)
+                    ids_before = normalize_token_ids(await self.loop.run_in_executor(
                         None,
                         lambda: self.tokenizer.apply_chat_template(
-                            [tool_msg], add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                            conv_before, add_generation_prompt=False, tokenize=True, **self.apply_chat_template_kwargs
                         ),
-                    )
-                    cmd_message_ids = normalize_token_ids(raw_cmd_ids)
+                    ))
+                    conversation_messages.append(tool_msg)
+                    conv_after = list(conversation_messages)
+                    ids_after = normalize_token_ids(await self.loop.run_in_executor(
+                        None,
+                        lambda: self.tokenizer.apply_chat_template(
+                            conv_after, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                        ),
+                    ))
+                    cmd_message_ids = ids_after[len(ids_before):]
                     curr_input += cmd_message_ids
                     all_output_with_tool += cmd_message_ids
                     if all_log_probs is not None:
