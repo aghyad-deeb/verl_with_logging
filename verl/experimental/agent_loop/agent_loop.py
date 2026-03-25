@@ -608,7 +608,7 @@ class AgentLoopWorker:
             tokenizer=self.tokenizer,
             processor=self.processor,
             dataset_cls=self.dataset_cls,
-            dataset_config=DictConfigWrap(self.config.data),
+            data_config=DictConfigWrap(self.config.data),
         )
         output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
         return await self._agent_loop_postprocess(output, **kwargs)
