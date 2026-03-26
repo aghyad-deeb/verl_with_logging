@@ -648,10 +648,15 @@ class FusionAgentLoop(AgentLoopBase):
         files = self.flatten_structure(files_dict)
         
         # Parse extra files (placed at absolute paths outside working directory)
-        extra_files_dict = self.tools_kwargs.get("extra_files_dict", [])
+        # Accepts either a flat dict {abs_path: base64_content} or a tree-node list
+        extra_files_dict = self.tools_kwargs.get("extra_files_dict", {})
         if extra_files_dict:
-            assert isinstance(extra_files_dict, list), f"{extra_files_dict=}"
-            extra_files = self.flatten_structure(extra_files_dict)
+            if isinstance(extra_files_dict, dict):
+                extra_files = extra_files_dict
+            elif isinstance(extra_files_dict, list):
+                extra_files = self.flatten_structure(extra_files_dict)
+            else:
+                extra_files = {}
         else:
             extra_files = {}
 
