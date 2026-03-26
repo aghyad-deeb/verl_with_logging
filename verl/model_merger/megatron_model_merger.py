@@ -151,7 +151,10 @@ class MegatronModelMerger(BaseModelMerger):
             os.environ["MASTER_PORT"] = "12355"
 
         set_numa_affinity()
-        torch.distributed.init_process_group(get_nccl_backend())
+        # Use gloo for single-rank conversion to avoid NCCL NET plugin init failures
+        # on nodes without full networking (e.g., login nodes or compute nodes without OFI).
+        backend = "gloo" if os.environ.get("WORLD_SIZE", "1") == "1" else get_nccl_backend()
+        torch.distributed.init_process_group(backend)
 
         self.rank = torch.distributed.get_rank()
         self.world_size = torch.distributed.get_world_size()

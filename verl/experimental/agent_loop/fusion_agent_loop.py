@@ -44,6 +44,7 @@ from typing import Any, Optional, Dict, List
 from uuid import uuid4
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
+from verl.utils.tokenizer import normalize_token_ids
 from verl.workers.rollout.replica import TokenOutput
 from verl.utils.profiler import simple_timer
 
@@ -90,10 +91,10 @@ def check_server_running(url: str = None) -> bool:
 
 
 SANDBOX_CLIENT_TIMEOUT = float(os.getenv("SANDBOX_CLIENT_TIMEOUT", "120"))
-SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "8"))
+SANDBOX_RUN_TIMEOUT = float(os.getenv("SANDBOX_RUN_TIMEOUT", "10"))
 
 # Retry configuration for transient connection errors
-SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "10"))
+SANDBOX_MAX_RETRIES = int(os.getenv("SANDBOX_MAX_RETRIES", "4"))
 SANDBOX_RETRY_BACKOFF = float(os.getenv("SANDBOX_RETRY_BACKOFF", "1.0"))  # Base backoff in seconds
 
 
@@ -322,18 +323,31 @@ class SessionClient:
                     # Pin this session to the container that accepted it
                     self._session_endpoints[session_id] = endpoint
                     return session_id
-                else:
-                    # Application-level failure (e.g., max sessions reached,
-                    # duplicate session ID). Try the next container.
-                    last_exception = RuntimeError(
-                        f"Session creation failed on {endpoint}: "
-                        f"{result.get('message', 'Unknown error')}"
+
+                # Check if a previous timed-out attempt actually created
+                # the session on this container.  Session IDs are client-
+                # generated UUIDs, so "already exists" for OUR id means
+                # the create succeeded but the HTTP response was lost.
+                msg = result.get("message", "")
+                if "already exists" in msg and session_id in msg:
+                    logger.info(
+                        f"Reclaimed phantom session {session_id} on "
+                        f"{endpoint} (previous create succeeded but "
+                        f"response timed out)"
                     )
-                    logger.warning(
-                        f"Session creation returned status={result.get('status')} "
-                        f"on {endpoint}, trying next container: "
-                        f"{result.get('message', '')}"
-                    )
+                    self._session_endpoints[session_id] = endpoint
+                    return session_id
+
+                # Genuine application-level failure (e.g., max sessions
+                # reached). Try the next container.
+                last_exception = RuntimeError(
+                    f"Session creation failed on {endpoint}: "
+                    f"{msg or 'Unknown error'}"
+                )
+                logger.warning(
+                    f"Session creation returned status={result.get('status')} "
+                    f"on {endpoint}, trying next container: {msg}"
+                )
             except self._NON_RETRYABLE:
                 raise
             except Exception as e:
@@ -630,8 +644,20 @@ class FusionAgentLoop(AgentLoopBase):
             timeout=self.session_client.run_timeout,
             fetch_files=self.files_to_fetch,
         )
-        
-        fetched_files = self.decode_fetched_files(result.get("files", {}))
+
+        # Detect sandbox infrastructure errors (e.g. mount namespace failures).
+        # These are not the agent's fault — retry once before giving up.
+        if result.get("return_code") == 99 and "HOME_ISO" in result.get("stderr", ""):
+            logger.warning(f"HOME_ISO failure, retrying command: {result.get('stderr', '')[:200]}")
+            result = await self.session_client.run_command(
+                session_id=self.current_session_id,
+                command=command,
+                timeout=self.session_client.run_timeout,
+                fetch_files=self.files_to_fetch,
+            )
+
+        raw_files = result.get("files", {})
+        fetched_files = self.decode_fetched_files(raw_files)
         return self.create_command_output(result), fetched_files
 
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
@@ -684,15 +710,17 @@ class FusionAgentLoop(AgentLoopBase):
             request_id = uuid4().hex
             num_turns = 0
             max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get("max_assistant_turns", 5)
+            if max_num_turns is None:
+                max_num_turns = 5
             mask = list()
             
-            prompt_ids = await self.loop.run_in_executor(
+            raw_prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self.tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
                 ),
             )
-            
+            prompt_ids = normalize_token_ids(raw_prompt_ids)
             curr_input = list(prompt_ids)
             all_output_with_tool = list()
             all_log_probs = list()  # Set to None if any generate() call lacks log_probs
@@ -769,15 +797,27 @@ class FusionAgentLoop(AgentLoopBase):
                     cmd_output = self.truncate_to_token_budget(cmd_output, tokens_remaining)
                     
                     tool_msg = {"role": "tool", "content": cmd_output}
-                    conversation_messages.append(tool_msg)
-                    
-                    cmd_message_ids = await self.loop.run_in_executor(
+
+                    # Tokenize tool message via full-conversation delta.
+                    # Qwen3.5's chat template requires a user query in the messages,
+                    # so we can't tokenize [tool_msg] alone. Instead, tokenize the
+                    # conversation before and after appending, then take the delta.
+                    conv_before = list(conversation_messages)
+                    ids_before = normalize_token_ids(await self.loop.run_in_executor(
                         None,
                         lambda: self.tokenizer.apply_chat_template(
-                            [tool_msg], add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                            conv_before, add_generation_prompt=False, tokenize=True, **self.apply_chat_template_kwargs
                         ),
-                    )
-                    
+                    ))
+                    conversation_messages.append(tool_msg)
+                    conv_after = list(conversation_messages)
+                    ids_after = normalize_token_ids(await self.loop.run_in_executor(
+                        None,
+                        lambda: self.tokenizer.apply_chat_template(
+                            conv_after, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                        ),
+                    ))
+                    cmd_message_ids = ids_after[len(ids_before):]
                     curr_input += cmd_message_ids
                     all_output_with_tool += cmd_message_ids
                     if all_log_probs is not None:
@@ -816,17 +856,19 @@ class FusionAgentLoop(AgentLoopBase):
                             timeout=5,
                             fetch_files=self.files_to_fetch,
                         )
-                        fetched_files = self.decode_fetched_files(final_result.get("files", {}))
+                        final_raw_files = final_result.get("files", {})
+                        fetched_files = self.decode_fetched_files(final_raw_files)
                     except Exception as e:
                         logger.warning(f"Final file fetch failed: {e}")
 
             assert isinstance(fetched_files, np.ndarray)
-            
+
             return AgentLoopOutput(
                 prompt_ids=prompt_ids[:self.prompt_length],
                 response_ids=all_output_with_tool[:self.response_length],
                 response_mask=mask[:self.response_length],
                 response_logprobs=all_log_probs if all_log_probs else None,
+                multi_modal_data={},
                 num_turns=num_turns,
                 metrics=metrics,
                 extra_fields=dict(

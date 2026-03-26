@@ -12,24 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import ctypes
-import gc
 import json
 import logging
 import os
 import platform
 import signal
 import threading
-from multiprocessing import shared_memory
 from types import MethodType
-from typing import Any, Callable, Literal, TypedDict, get_args
+from typing import Any, Literal, Optional, get_args
 
 import torch
-import zmq
+from vllm.outputs import RequestOutput
 
-from verl.utils.device import get_torch_device, is_npu_available
+from verl.utils.device import is_npu_available
 from verl.utils.vllm import TensorLoRARequest, VLLMHijack
 from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 from verl.utils.vllm.vllm_fp8_utils import apply_vllm_fp8_patches, is_fp8_model, load_quanted_weights
+
+try:
+    from vllm_omni.diffusion.worker.diffusion_worker import CustomPipelineWorkerExtension
+
+    from verl.utils.vllm_omni import OmniTensorLoRARequest, VLLMOmniHijack
+
+    _VLLM_OMNI_AVAILABLE = True
+except (ImportError, RuntimeError):  # optional stack; ImportError if missing, RuntimeError e.g. diffusers/transformers
+    CustomPipelineWorkerExtension = None  # type: ignore[assignment]
+    OmniTensorLoRARequest = None  # type: ignore[assignment]
+    VLLMOmniHijack = None  # type: ignore[assignment]
+    _VLLM_OMNI_AVAILABLE = False
+
+# Use object as fallback base so the class definition is always valid even when
+# vllm_omni is not installed (None is not a valid base class).
+_OmniWorkerBase = CustomPipelineWorkerExtension if _VLLM_OMNI_AVAILABLE else object
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -105,42 +119,6 @@ def monkey_patch_compute_logits(model, vocab_size: int):
     model.compute_logits = MethodType(compute_logits, model)
 
 
-# copy from https://github.com/vllm-project/vllm/blob/main/examples/offline_inference/rlhf_utils.py
-def rebuild_ipc(handle: tuple[Callable, tuple], device_id: int | None = None) -> torch.Tensor:
-    func, args = handle
-    list_args = list(args)
-    if device_id is not None:
-        # the key is to change device id to the current device id
-        # in case two processes have different CUDA_VISIBLE_DEVICES
-        list_args[6] = device_id
-    buffer = func(*list_args)
-    return buffer
-
-
-def create_shared_memory(size: int, name: str):
-    """Create shared memory for weight transfer. If already exists, attach to it."""
-    try:
-        shm = shared_memory.SharedMemory(name=name, create=True, size=size)
-    except FileExistsError:
-        shm = shared_memory.SharedMemory(name=name)
-    return shm
-
-
-def rebuild_shared_memory(name: str, size: int, dtype=torch.uint8):
-    """Rebuild tensor from shared memory."""
-    shm = shared_memory.SharedMemory(name=name)
-    tensor = torch.frombuffer(shm.buf[:size], dtype=dtype)
-
-    return tensor, shm
-
-
-class TensorMetadata(TypedDict):
-    name: str
-    shape: torch.Size
-    dtype: torch.dtype
-    offset: int
-
-
 class vLLMColocateWorkerExtension:
     """
     The class for vLLM's worker to inherit from, in the colocate setting.
@@ -163,6 +141,21 @@ class vLLMColocateWorkerExtension:
         # 2. patch online fp8 quant
         if os.environ.get("VERL_VLLM_FP8_QUANT_ENABLED", "0") == "1":
             apply_vllm_fp8_patches()
+        # 3. patch QAT (compressed-tensors NVFP4) for dynamic weight loading
+        vllm_config = kwargs.get("vllm_config")
+        quant_config = getattr(vllm_config, "quant_config", None) if vllm_config else None
+        _is_qat_model = getattr(quant_config, "quant_format", None) == "nvfp4-pack-quantized"
+        _is_modelopt_qat = type(quant_config).__name__ == "ModelOptNvFp4Config"
+        if _is_qat_model:
+            from verl.utils.qat import apply_qat_patches
+
+            apply_qat_patches()
+            logger.info("Applied QAT (compressed-tensors) patches in vLLM worker subprocess")
+        elif _is_modelopt_qat:
+            from verl.utils.modelopt import apply_modelopt_nvfp4_patches
+
+            apply_modelopt_nvfp4_patches()
+            logger.info("Applied ModelOpt NVFP4 patches in vLLM worker subprocess")
 
         # TODO: For ascend NPU, when the corresponding vllm-ascend version is upgraded to v0.13.0,
         # please remove the VLLM_ASCEND_REQUIRED_ENV_VARS variable replacement action.
@@ -172,7 +165,10 @@ class vLLMColocateWorkerExtension:
                 if k not in os.environ:
                     os.environ[k] = VLLM_ASCEND_REQUIRED_ENV_VARS[k]
 
-        return super().__new__(cls)
+        instance = super().__new__(cls)
+        instance._is_qat_model = _is_qat_model
+        instance._is_modelopt_qat = _is_modelopt_qat
+        return instance
 
     def monkey_patch_model(self, vocab_size: int):
         # patch compute_logits to avoid sampling OOV token
@@ -184,6 +180,8 @@ class vLLMColocateWorkerExtension:
         """Update the weights of the rollout model."""
         from vllm.platforms import current_platform
 
+        from verl.workers.rollout.vllm_rollout.bucketed_weight_transfer import BucketedWeightReceiver
+
         if current_platform.device_type == "npu" and self.device is None:
             self.device = torch.device(f"npu:{self.local_rank}")
 
@@ -191,58 +189,55 @@ class vLLMColocateWorkerExtension:
         if peft_config and base_sync_done:
             self.remove_lora(VLLM_LORA_INT_ID)
 
-        # build communication buffer
+        use_standard_weight_load = not (peft_config and base_sync_done) and not is_fp8_model(
+            self.model_runner.vllm_config
+        )
+
+        if self._is_qat_model:
+            # QAT (compressed-tensors): Prepare for weight loading BEFORE receiving any buckets
+            from verl.utils.qat import prepare_qat_for_load_weights
+
+            prepare_qat_for_load_weights(self.model_runner.model, device=self.device)
+            logger.info("QAT: prepare_qat_for_load_weights completed")
+        elif self._is_modelopt_qat:
+            from verl.utils.modelopt.vllm_modelopt_patch import prepare_modelopt_for_weight_reload
+
+            prepare_modelopt_for_weight_reload(self.model_runner.model, device=self.device)
+            logger.info("ModelOpt: prepare_modelopt_for_weight_reload completed")
+        elif use_standard_weight_load:
+            # Re-apply here because async IPC weight sync can happen long after init and lose MoE weight_loader attrs.
+            patch_vllm_moe_model_weight_loader(self.model_runner.model)
+
         assert self.device is not None
-        if not hasattr(self, "_zmq_ctx") or self._zmq_ctx is None:
-            self._zmq_ctx = zmq.Context()
-        socket = self._zmq_ctx.socket(zmq.REP)
-        socket.connect(self._get_zmq_handle())
+        receiver = BucketedWeightReceiver(
+            zmq_handle=self._get_zmq_handle(),
+            device=self.device,
+            use_shm=use_shm,
+        )
+        receiver.receive_weights(
+            on_bucket_received=lambda weights: self._update_weights(
+                weights, peft_config=peft_config, base_sync_done=base_sync_done
+            )
+        )
 
-        comm_metadata = socket.recv_pyobj()
-        buffer, shm = None, None
-        if not use_shm:
-            handle = comm_metadata
-            buffer = rebuild_ipc(handle, self.device.index)
-            assert buffer.dtype == torch.uint8
-        else:
-            shm_name = comm_metadata["name"]
-            shm_size = comm_metadata["size"]
-            buffer, shm = rebuild_shared_memory(shm_name, shm_size, dtype=torch.uint8)
-        socket.send(b"")
+        if self._is_qat_model:
+            # QAT (compressed-tensors): call process_weights_after_loading AFTER all buckets are received
+            from verl.utils.qat import manual_process_weights_after_loading
 
-        # receive bucket and update weights
-        while True:
-            metadata = socket.recv_pyobj()
-            weights, tensor = [], None
-            for name, meta in metadata["bucket_meta"].items():
-                shape, dtype, offset = meta["shape"], meta["dtype"], meta["offset"]
-                size = dtype.itemsize * shape.numel()
-                # NOTE: we need to clone the tensor to release CUDA IPC memory
-                # but for shared memory, it's not necessary and if we do clone,
-                # it will cause extra memory copy overhead and slow down the process.
-                tensor = buffer[offset : offset + size].view(dtype=dtype).view(shape)
-                if not use_shm:
-                    tensor = tensor.clone()
-                else:
-                    tensor = tensor.to(self.device)
-                weights.append((name, tensor))
-            get_torch_device().synchronize()
-            socket.send(b"")
-            self._update_weights(weights, peft_config=peft_config, base_sync_done=base_sync_done)
-            del weights, tensor
-            if metadata["is_last"]:
-                break
+            manual_process_weights_after_loading(self.model_runner.model)
+            logger.info("QAT: process_weights_after_loading completed")
+        elif self._is_modelopt_qat:
+            from verl.utils.modelopt.vllm_modelopt_patch import modelopt_process_weights_after_loading
 
-        # clean up
-        socket.close()
-        del buffer
-        if shm is not None:
-            shm.close()
-            del shm
-        get_torch_device().synchronize()
-        gc.collect()
-        get_torch_device().ipc_collect()
-        get_torch_device().empty_cache()
+            modelopt_process_weights_after_loading(self.model_runner.model)
+            logger.info("ModelOpt QAT: process_weights_after_loading completed")
+        elif use_standard_weight_load:
+            # Some post-load transforms are non-idempotent; run once after all buckets.
+            from vllm.model_executor.model_loader.utils import process_weights_after_loading
+
+            model = self.model_runner.model
+            model_config = self.model_runner.vllm_config.model_config
+            process_weights_after_loading(model, model_config, self.device)
 
     def _update_weights(self, weights: list[tuple[str, torch.Tensor]], peft_config: dict, base_sync_done: bool):
         if peft_config and base_sync_done:
@@ -272,7 +267,75 @@ class vLLMColocateWorkerExtension:
         """Get ZMQ handle for communication."""
         if not hasattr(self, "device_uuid") or not self.device_uuid:
             self.device_uuid = get_device_uuid(self.device.index)
-        return f"ipc:///tmp/rl-colocate-zmq-{self.device_uuid}.sock"
+        zmq_dir = os.environ.get("TMPDIR", "/tmp")
+        return f"ipc://{zmq_dir}/rl-colocate-zmq-{self.device_uuid}.sock"
+
+
+class vLLMOmniColocateWorkerExtension(_OmniWorkerBase):
+    """
+    The class for vLLM-Omni's worker to inherit from, in the colocate setting.
+    By defining an extension class, the code can work no matter what is
+    the underlying worker class. This way, the code can be compatible
+    with both vLLM V0 and V1.
+    NOTE: we define this class in a separate module, and the main module
+    should pass the full qualified name as `worker_extension_cls` argument.
+
+    Feature support:
+    1. LoRA
+    """
+
+    def __new__(cls, **kwargs):
+        assert _VLLM_OMNI_AVAILABLE, "vLLM-Omni is required to use vLLMOmniColocateWorkerExtension"
+        set_death_signal()
+
+        # 1. patch for Lora
+        VLLMOmniHijack.hijack()
+
+        return super().__new__(cls)
+
+    def update_weights_from_ipc(self, peft_config: dict = None, base_sync_done=False, use_shm: bool = False):
+        """Update the weights of the rollout model."""
+
+        from verl.workers.rollout.vllm_rollout.bucketed_weight_transfer import BucketedWeightReceiver
+
+        # In async mode, make sure the old lora is removed before adding the new one
+        if peft_config and base_sync_done:
+            self.remove_lora(VLLM_LORA_INT_ID)
+
+        assert self.device is not None
+        receiver = BucketedWeightReceiver(
+            zmq_handle=self._get_zmq_handle(),
+            device=self.device,
+            use_shm=use_shm,
+        )
+        receiver.receive_weights(
+            on_bucket_received=lambda weights: self._update_weights(
+                weights, peft_config=peft_config, base_sync_done=base_sync_done
+            )
+        )
+
+    def _update_weights(self, weights: list[tuple[str, torch.Tensor]], peft_config: dict, base_sync_done: bool):
+        if peft_config and base_sync_done:
+            weights = dict(weights)
+            lora_request = OmniTensorLoRARequest(
+                lora_name=VLLM_LORA_NAME,
+                lora_int_id=VLLM_LORA_INT_ID,
+                lora_path=VLLM_LORA_PATH,
+                peft_config=peft_config,
+                lora_tensors=weights,
+            )
+            self.add_lora(lora_request)
+            logger.info(f"vLLM-Omni load weights, loaded_params: {len(weights)}")
+        else:
+            logger.info("Loading standard weights (async)")
+            self.load_weights(weights)
+
+    def _get_zmq_handle(self) -> str:
+        """Get ZMQ handle for communication."""
+        if not hasattr(self, "device_uuid") or not self.device_uuid:
+            self.device_uuid = get_device_uuid(self.device.index)
+        zmq_dir = os.environ.get("TMPDIR", "/tmp")
+        return f"ipc://{zmq_dir}/rl-colocate-zmq-{self.device_uuid}.sock"
 
 
 class SuppressSignalInThread:
@@ -331,3 +394,39 @@ def build_cli_args_from_config(config: dict[str, Any]) -> list[str]:
             # Use json.dumps for dict to ensure valid JSON format
             cli_args.append(json.dumps(v) if isinstance(v, dict) else str(v))
     return cli_args
+
+
+def extract_prompt_logprobs(output: RequestOutput, num_prompt_logprobs: Optional[int], result_dict: dict[str, list]):
+    """Extract prompt log probabilities from generation output."""
+    if num_prompt_logprobs is None:
+        return
+
+    prompt_logprobs_ls, prompt_ids_ls = [], []
+    # NOTE: logprob of first prompt token is None.
+    for logprobs_dict in output.prompt_logprobs[1:]:
+        if num_prompt_logprobs == 0:
+            token_id_str = list(logprobs_dict.keys())[0]
+            logprob = logprobs_dict[token_id_str].logprob
+            prompt_logprobs_ls.append([logprob])
+            prompt_ids_ls.append([int(token_id_str)])
+        else:
+            prompt_ids = [None] * num_prompt_logprobs
+            prompt_logprobs = [None] * num_prompt_logprobs
+            # We get either top-k logprobs or top-k plus the sampled logprob (if sampled token is not in top-k)
+            assert len(logprobs_dict) in [num_prompt_logprobs, num_prompt_logprobs + 1], len(logprobs_dict)
+            for token_id_str, token_logprob in logprobs_dict.items():
+                rank = token_logprob.rank
+                if rank > num_prompt_logprobs:
+                    continue  # the sampled token is not in the top-k
+                logprob = token_logprob.logprob
+                prompt_ids[rank - 1] = int(token_id_str)
+                prompt_logprobs[rank - 1] = logprob
+            prompt_logprobs_ls.append(prompt_logprobs)
+            prompt_ids_ls.append(prompt_ids)
+
+    # NOTE: pad a dummy prompt logprob for last prompt token.
+    prompt_logprobs_ls.append([0.0] * max(num_prompt_logprobs, 1))
+    prompt_ids_ls.append([0] * max(num_prompt_logprobs, 1))
+
+    result_dict["prompt_ids"] = prompt_ids_ls
+    result_dict["prompt_logprobs"] = prompt_logprobs_ls
