@@ -16,7 +16,8 @@ from .agent_loop import AgentLoopBase, AgentLoopManager, AsyncLLMServerManager
 from .single_turn_agent_loop import SingleTurnAgentLoop
 from .tool_agent_loop import ToolAgentLoop
 from .fusion_agent_loop import FusionAgentLoop
+from .bash_loop_custom_tools import BashLoopCustomTools
 
-_ = [SingleTurnAgentLoop, ToolAgentLoop, FusionAgentLoop]
+_ = [SingleTurnAgentLoop, ToolAgentLoop, FusionAgentLoop, BashLoopCustomTools]
 
 __all__ = ["AgentLoopBase", "AgentLoopManager", "AsyncLLMServerManager"]
