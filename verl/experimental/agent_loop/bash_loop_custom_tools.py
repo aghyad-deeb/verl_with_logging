@@ -107,8 +107,6 @@ class BashLoopCustomTools(FusionAgentLoop):
         super().__init__(*args, **kwargs)
 
         # Determine tool parser: explicit config > auto-detect > None (legacy).
-        # Note: MultiTurnConfig.format defaults to "hermes", so auto-detection
-        # only triggers if format is explicitly set to null in the config.
         multi_turn = self.config.actor_rollout_ref.rollout.get("multi_turn", {})
         tool_parser_name = multi_turn.get("format", None) if multi_turn else None
         if tool_parser_name is None:
@@ -136,9 +134,15 @@ class BashLoopCustomTools(FusionAgentLoop):
         """Build kwargs for apply_chat_template, merging tool_schemas safely.
 
         Avoids TypeError if apply_chat_template_kwargs already contains 'tools'.
+        Only passes ``tools`` when it is not None, so legacy/manual-injection
+        paths behave identically to the original FusionAgentLoop (no ``tools``
+        key at all).
         """
         apply_kwargs = dict(self.apply_chat_template_kwargs)
-        apply_kwargs["tools"] = tool_schemas
+        if tool_schemas is not None:
+            apply_kwargs["tools"] = tool_schemas
+        else:
+            apply_kwargs.pop("tools", None)
         apply_kwargs.update(extra)
         return apply_kwargs
 
@@ -188,9 +192,10 @@ class BashLoopCustomTools(FusionAgentLoop):
             metrics["tool_calls_count"] = 0
             request_id = uuid4().hex
             num_turns = 0
-            max_num_turns = self.config.actor_rollout_ref.rollout.multi_turn.get(
+            multi_turn_cfg = self.config.actor_rollout_ref.rollout.get("multi_turn", {})
+            max_num_turns = multi_turn_cfg.get(
                 "max_assistant_turns", 5
-            )
+            ) if multi_turn_cfg else 5
             if max_num_turns is None:
                 max_num_turns = 5
             mask = list()
@@ -329,15 +334,15 @@ class BashLoopCustomTools(FusionAgentLoop):
                     if function_calls:
                         tool_calls_list = []
                         for fc in function_calls:
-                            try:
-                                parsed_args = json.loads(fc.arguments)
-                            except (json.JSONDecodeError, TypeError):
-                                parsed_args = fc.arguments
+                            # Keep arguments as the original JSON string.
+                            # Templates that need a dict (Qwen3.5) use tojson/items
+                            # which handles both; templates that expect a string
+                            # (Hermes, DeepSeek) would double-serialize a dict.
                             tool_calls_list.append({
                                 "type": "function",
                                 "function": {
                                     "name": fc.name,
-                                    "arguments": parsed_args,
+                                    "arguments": fc.arguments,
                                 },
                             })
                         assistant_msg["tool_calls"] = tool_calls_list
@@ -355,8 +360,9 @@ class BashLoopCustomTools(FusionAgentLoop):
                     )
 
                     if is_dangerous:
+                        first_word = cmd.split()[0] if cmd.strip() else "command"
                         cmd_output = (
-                            f"bash: {cmd.split()[0]}: Operation not permitted"
+                            f"bash: {first_word}: Operation not permitted"
                         )
                         fetched_files = self._EMPTY_FILES
                     elif self.has_junk_artifacts(cmd):
