@@ -52,14 +52,20 @@ class SingleTurnAgentLoop(AgentLoopBase):
 
         # 3. generate sequences
         metrics = {}
-        with simple_timer("generate_sequences", metrics):
-            output: TokenOutput = await self.server_manager.generate(
-                request_id=uuid4().hex,
-                prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
-                image_data=images,
-                video_data=videos,
-            )
+        # Skip generation if prompt already fills the context budget
+        max_tokens = self.prompt_length + self.response_length - len(prompt_ids)
+        if max_tokens <= 0:
+            from verl.workers.rollout.replica import TokenOutput
+            output = TokenOutput(token_ids=[], log_probs=[], routed_experts=None)
+        else:
+            with simple_timer("generate_sequences", metrics):
+                output: TokenOutput = await self.server_manager.generate(
+                    request_id=uuid4().hex,
+                    prompt_ids=prompt_ids,
+                    sampling_params=sampling_params,
+                    image_data=images,
+                    video_data=videos,
+                )
         
         # Decode generated response and add to conversation
         response_text = await self.loop.run_in_executor(
