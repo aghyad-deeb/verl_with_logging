@@ -335,15 +335,17 @@ class BashLoopCustomTools(FusionAgentLoop):
                     if function_calls:
                         tool_calls_list = []
                         for fc in function_calls:
-                            # Keep arguments as the original JSON string.
-                            # Templates that need a dict (Qwen3.5) use tojson/items
-                            # which handles both; templates that expect a string
-                            # (Hermes, DeepSeek) would double-serialize a dict.
+                            # Parse arguments to a dict — Qwen3.5's template
+                            # calls arguments.items(), so a JSON string crashes.
+                            try:
+                                parsed_args = json.loads(fc.arguments)
+                            except (json.JSONDecodeError, TypeError):
+                                parsed_args = {"command": fc.arguments}
                             tool_calls_list.append({
                                 "type": "function",
                                 "function": {
                                     "name": fc.name,
-                                    "arguments": fc.arguments,
+                                    "arguments": parsed_args,
                                 },
                             })
                         assistant_msg["tool_calls"] = tool_calls_list
