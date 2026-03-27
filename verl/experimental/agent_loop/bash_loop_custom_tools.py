@@ -103,6 +103,32 @@ class BashLoopCustomTools(FusionAgentLoop):
 
     _use_overlay = False
 
+    # Refined pattern list: removed patterns that cause false positives when
+    # the model writes code via heredocs (cat > file.py << 'EOF' ... EOF).
+    # Removed: "for ((" (Python tuple unpacking), "exec("/"eval(" (Python
+    # builtins), "ping "/"ping\t" (matches "mapping "), "```" (markdown in
+    # heredocs). The sandbox enforces the real security boundary.
+    _DANGEROUS_PATTERNS = [
+        "pkill", "kill ", "kill\t", "killall", "shutdown", "reboot", "halt", "poweroff",
+        "rm -rf /", ":(){ :|:& };:",
+        "sudo",
+        "while true", "while :",
+        "malware", "exploit", "payload",
+        "contact_server", "/var/run/",
+        "destroy",
+        "nmap", "netcat", " nc ",
+        "| sh", "| bash",
+        "/.config/", "/.local/",
+        "/tmp/mutation/",
+        "$SHELL",
+        "nuitka",
+        "curl -X POST http://",
+        "readd_bash_add",
+        "read -p",
+        "/dev/urandom", "/dev/random", "/dev/zero",
+        "tail -f", "watch ",
+    ]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
