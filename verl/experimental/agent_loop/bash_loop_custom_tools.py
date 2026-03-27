@@ -107,6 +107,7 @@ class BashLoopCustomTools(FusionAgentLoop):
         super().__init__(*args, **kwargs)
 
         # Determine tool parser: explicit config > auto-detect > None (legacy).
+        # Set multi_turn.format to null in your config to trigger auto-detection.
         multi_turn = self.config.actor_rollout_ref.rollout.get("multi_turn", {})
         tool_parser_name = multi_turn.get("format", None) if multi_turn else None
         if tool_parser_name is None:
